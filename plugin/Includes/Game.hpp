@@ -14,7 +14,7 @@ struct PlayerState {
     u8 anim = 0;               // player move model's animation id (mm+0x58; 0 idle, 0x10 walk)
     u16 model = 0;             // player model id (0xAC Brendan, 0xAB May; 0 if unknown)
     // The field is live and running (not title/intro/loading): the player's character exists
-    // and its flags have 0x4000. During the intro the save's field is already built with the
+    // and its flags have bit 0x2. During the intro the save's field is already built with the
     // player flagged 0x5; calling game functions on it then hangs the game (verified).
     bool inField = false;
     bool riding = false;       // on a bike: player mm+0x04 has 0x01200000

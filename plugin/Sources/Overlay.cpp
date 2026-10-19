@@ -182,8 +182,8 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
         int ex = (int)Clampf((float)sx, 6, TOP_W - 7);
         int ey = (int)Clampf((float)sy, 20, TOP_H - 7);
         float tiles = std::sqrt((r.dx - v.me.x) * (r.dx - v.me.x) + (r.dy - v.me.y) * (r.dy - v.me.y)) / TILE;
-        char buf[32];
-        snprintf(buf, sizeof buf, "%s %dt", r.name, (int)(tiles + 0.5f));
+        char buf[40];
+        snprintf(buf, sizeof buf, "%s%s %dt", r.name, r.away ? " (busy)" : "", (int)(tiles + 0.5f));
         std::string t = buf;
         int lw = TextWidth(t) + 6;
         int lx = (int)Clampf((float)(ex - lw / 2), 2, (float)(TOP_W - lw - 2));
@@ -212,7 +212,9 @@ void DrawTop(const Screen& s) {
 
 void DrawBottom(const Screen& s) {
     const View& v = g_view; // filled by the top-screen pass this frame
-    if (!v.overlay) return;
+    // Off while the game runs a script (dialogs, yes/no prompts, battles): our list and radar
+    // would cover its touch buttons.
+    if (!v.overlay || v.me.suspended) return;
 
     // Radar: 90x90 box in the top-right corner, north up, our player in the centre.
     constexpr int R = 45, CX = BOT_W - R - 4, CY = R + 4;
@@ -228,15 +230,16 @@ void DrawBottom(const Screen& s) {
         const Remote& r = v.remotes[id];
         if (!r.active || id == v.myId) continue;
         bool same = Visible(r, v.me);
+        bool sameMap = r.hasState && v.me.valid && r.map == v.me.map; // "here" even while we're busy
         char buf[48];
         const char* bike = r.riding ? " (bike)" : "";
         if (!r.hasState) snprintf(buf, sizeof buf, "%s  (loading)", r.name);
         else if (r.away) snprintf(buf, sizeof buf, "%s  (busy)", r.name); // battle, soaring...
-        else if (same) snprintf(buf, sizeof buf, "%s  here%s", r.name, bike);
+        else if (sameMap) snprintf(buf, sizeof buf, "%s  here%s", r.name, bike);
         else snprintf(buf, sizeof buf, "%s  map %u%s", r.name, (unsigned)r.map, bike);
         int y = 18 + rows * 12;
         Rect(s, 4, y, 150, 12, kBg);
-        Text(s, buf, 8, y + 1, same ? kPlayerColors[id] : Color(160, 160, 160));
+        Text(s, buf, 8, y + 1, sameMap ? kPlayerColors[id] : Color(160, 160, 160));
         rows++;
 
         if (same) {

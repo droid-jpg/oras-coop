@@ -257,6 +257,11 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
 - mm+0x08 bit 0 = under script control: 0x2000400F while **soaring** (Eon Flute), 0x5 in the
   intro; the start menu leaves it clear (0x20004002). Map id/position stay at the takeoff spot.
 - Player state +0x08 ("aux") flips between 0x0/0x1/0xC with movement — not a bike flag.
+- **Field-live check corrected**: player mm+0x08 bit **0x2** is set in every field state
+  (towns 0x4002/0x4006, routes **0x8006**, bike 0x20004402, soaring 0x2000400F); the intro has
+  0x5. 0x4000 (first guess) is clear on routes — that broke all syncing outside towns.
+- **Wild battle** (Route 110 grass): bit 0 (script control) is set, so friends see "busy" after
+  2 s; our own overlay is hidden during it. Fleeing clears it.
 - Surf not testable with this party (no Surf user: "The water is deep, deep blue.").
 - Registered items wheel (Y): left Mach bike, right Eon Flute, up/down rods; pick with the D-pad.
 - GDB caution: a `mem.mjs` call killed by `timeout` can leave the emulator halted → the

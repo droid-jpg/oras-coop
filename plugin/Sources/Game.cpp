@@ -293,7 +293,10 @@ constexpr int SPARE_SLOTS = 4;     // free slots kept for the game (scripts spaw
 constexpr u32 MM_MANAGER = 0x8B4;  // move model -> manager (used by the model registry)
 constexpr u32 MM_ZONE = 0x0E;
 
-constexpr u32 FIELD_ACTIVE = 0x4000; // player mm+0x08 while the field runs (0x5 in the intro)
+// Player mm+0x08 while the field runs: bit 0x2 in every field state seen (towns 0x4002/0x4006,
+// routes 0x8006, biking 0x20004402, soaring 0x2000400F); the intro has 0x5. (0x4000 is NOT it:
+// it is clear on routes.)
+constexpr u32 FIELD_ACTIVE = 0x2;
 
 bool PlayerFieldActive() {
     u32 p = FindPlayerSlot(), flags8 = 0;

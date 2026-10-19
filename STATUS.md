@@ -18,10 +18,11 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Two players on one PC | ✅ two Azahar windows on the relay: see each other, walk, map changes, collision, chat |
 | Friend on a bike | 🟡 listed as "(bike)" and their trainer runs; no bike model under them yet (the bike is a separate object) |
 | Friend soaring / in a long cutscene | ✅ shown as "Name (busy)", standing at their takeoff spot; back to normal on landing |
-| Friend in a battle | ❓ should show "(busy)" the same way (script-control flag), not verified — couldn't trigger a battle |
+| Friend in a battle | ✅ wild battle on Route 110: friends see "Name (busy)"; your own overlay hides during battles, dialogs and prompts |
 | Friend surfing | ❓ untested: the completed save's party has no Surf user |
 | Friend's own trainer (Brendan vs May) | ✅ the map loader is hooked to load their model on every map change; a friend who joins mid-map shows as the rival model (Littleroot) or yours until the next map change |
-| Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game). Battles not tested yet |
+| Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game) |
+| Towns and routes | ✅ (a wrong "field is live" check had stopped syncing on routes; fixed) |
 
 ## Notes for the next session
 
