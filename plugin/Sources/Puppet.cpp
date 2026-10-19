@@ -85,7 +85,8 @@ u8 PickAnim(Spawned& s, const Remote& r, u64 now) {
         s.fromSender = false;
         return ANIM_IDLE;
     }
-    if (r.away) return ANIM_IDLE; // busy (battle...): standing where they are
+    // Busy friends (cutscene, script-driven walk) keep their walk/run clip while they move; in a
+    // battle their position doesn't change, so they stand.
     if (r.riding) {
         // No bike model for other characters yet: pedal-speed motion reads best as running.
         s.moveAnim = ANIM_RUN;
@@ -133,6 +134,10 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         for (auto& s : s_spawned) Forget(s); // the game cleared non-persistent characters
     }
     bool settled = now - s_mapSince >= MAP_SETTLE_MS;
+    // While the game runs a script (cutscene, NPC talk, our own text box) or its UI is up, nobody is
+    // spawned, deleted or respawned: friends joining, leaving or changing mounts wait until it's
+    // over (scripts address characters by slot and spawn their own). Existing ones keep moving.
+    bool frozen = me.suspended || me.locked || me.menuOpen || game::GameScriptRunning();
 
     for (int id = 1; id <= MAX_ID; id++) {
         Spawned& s = s_spawned[id];
@@ -141,17 +146,17 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
                     now - r.lastUpdate < STALE_MS;
 
         if (!want) {
-            if (s.active) Despawn(id, s, me.map);
+            if (s.active && !frozen) Despawn(id, s, me.map); // else it stands there until the script ends
             continue;
         }
         // Spawned with a stand-in (their model wasn't loaded yet, or we didn't know it): swap to
         // their own trainer as soon as this map has it.
-        if (s.active && game::IsPlayerModel(r.model) && s.model != r.model && game::IsModelResident(r.model)) {
+        if (!frozen && s.active && game::IsPlayerModel(r.model) && s.model != r.model && game::IsModelResident(r.model)) {
             Despawn(id, s, me.map);
             continue;
         }
         if (!s.active) {
-            if (!settled) continue;
+            if (!settled || frozen) continue;
             u16 model = PickModel(r.model);
             if (!model) continue;
             u16 tx = (u16)std::max(0.0f, r.dx / 18.0f), ty = (u16)std::max(0.0f, r.dy / 18.0f);
@@ -180,11 +185,14 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         // mount, or getting off, respawns the character plain and starts over.
         Mount mount = r.surfing ? MOUNT_SURF : r.riding ? MOUNT_BIKE : MOUNT_NONE;
         if (mount != s.mountWanted) {
-            if (s.mountWanted != MOUNT_NONE) { Despawn(id, s, me.map); continue; }
+            if (s.mountWanted != MOUNT_NONE) {
+                if (!frozen) Despawn(id, s, me.map);
+                continue; // frozen: keeps its old mount until the script ends
+            }
             s.mountWanted = mount;
             s.mountSince = now;
         }
-        if (mount != MOUNT_NONE && !s.mounted && !s.mountFailed) {
+        if (!frozen && mount != MOUNT_NONE && !s.mounted && !s.mountFailed) {
             int res = game::AttachRide(s.mm, mount == MOUNT_SURF ? game::RIDE_SURF : game::RIDE_BIKE);
             if (res == 1) s.mounted = true;
             else if (res < 0 || now - s.mountSince > MOUNT_ATTACH_MS) s.mountFailed = true;

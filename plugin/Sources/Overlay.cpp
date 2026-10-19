@@ -2,6 +2,7 @@
 #include <3ds.h>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include "Session.hpp"
 #include "Game.hpp"
 #include "Puppet.hpp"
@@ -18,7 +19,8 @@ constexpr float HEAD_HEIGHT = 30.0f;            // world units from feet to just
 constexpr float TILE = 18.0f;
 constexpr float RADAR_RANGE = 20.0f * TILE;     // world units from centre to radar edge
 constexpr u64 STALE_MS = 5000;
-constexpr u64 CHAT_SHOW_MS = 6000;
+constexpr u64 NOTICE_MS = 3500;       // each notice stays this long (paused while the game's UI is up)
+constexpr u64 BATTLE_FRESH_MS = 6000; // a friend's battle info is shown while this recent
 
 const Color kBg(8, 14, 24, 170);
 const Color kAccent(0, 210, 255, 220);
@@ -57,8 +59,9 @@ struct View {
     Remote remotes[MAX_ID + 1];
     u8 myId;
     NetStatus status;
-    std::string statusText, chat, room, name;
-    u64 chatTime;
+    std::string statusText, room, name;
+    Notice notice;      // front of the notice queue
+    bool hasNotice;
     float scale;
     bool overlay;
     bool puppets;
@@ -109,8 +112,11 @@ View Snapshot() {
     View v;
     game::Locate(); // cheap when found; otherwise scans a small slice of the heap
     v.me = game::Read();
+    game::BattleState battle;
+    game::ReadBattle(battle);
     g_session.lock.Lock();
     g_session.local = v.me;
+    g_session.localBattle = battle;
     u64 now = osGetTime();
     for (int i = 0; i <= MAX_ID; i++) {
         Remote& r = g_session.remotes[i];
@@ -123,8 +129,8 @@ View Snapshot() {
     v.myId = g_session.myId;
     v.status = g_session.status;
     v.statusText = g_session.statusText;
-    v.chat = g_session.lastChat;
-    v.chatTime = g_session.lastChatTime;
+    v.hasNotice = g_session.noticeCount > 0;
+    if (v.hasNotice) v.notice = g_session.notices[0];
     v.room = g_session.cfg.room;
     v.name = g_session.cfg.name;
     v.scale = g_session.cfg.pxPerUnit;
@@ -148,6 +154,31 @@ std::string PlaceOf(u16 map) {
     if (game::PlaceName(map, buf, sizeof buf)) return buf;
     snprintf(buf, sizeof buf, "map %u", (unsigned)map);
     return buf;
+}
+
+// "Wingull Lv20" (the game's species name when it has been found).
+std::string MonName(u16 species, u8 level) {
+    char nm[16], buf[32];
+    if (!game::SpeciesName(species, nm, sizeof nm)) snprintf(nm, sizeof nm, "#%u", (unsigned)species);
+    snprintf(buf, sizeof buf, "%s Lv%u", nm, (unsigned)level);
+    return buf;
+}
+
+bool InBattle(const Remote& r) {
+    return r.away && r.battle.active && osGetTime() - r.battleTime < BATTLE_FRESH_MS;
+}
+
+// What a friend "says" when we talk to them: their greeting, or what's out in their battle.
+std::string FriendLine(const Remote& r) {
+    if (InBattle(r)) {
+        const game::BattleMon &a = r.battle.mon[0][0], &b = r.battle.mon[1][0];
+        char buf[96];
+        snprintf(buf, sizeof buf, "%s HP %u/%u\nvs %s HP %u/%u", MonName(a.species, a.level).c_str(),
+                 (unsigned)a.hp, (unsigned)a.maxHp, MonName(b.species, b.level).c_str(), (unsigned)b.hp,
+                 (unsigned)b.maxHp);
+        return buf;
+    }
+    return r.greeting[0] ? r.greeting : "...";
 }
 
 // ---- Talking to a friend ----
@@ -233,7 +264,7 @@ void UpdateTalk(const View& v) {
     g_talk.id = id;
     g_talk.start = now;
     g_talk.name = r.name;
-    g_talk.text = r.greeting[0] ? r.greeting : "...";
+    g_talk.text = FriendLine(r);
     // The game's own text box when it can start one right now; our drawn copy otherwise.
     int res = game::ShowGameMessage(g_talk.text.c_str());
     if (res == 0) return; // the game is busy this frame (another script): ignore the press
@@ -357,6 +388,125 @@ void DrawNotes(const Screen& s, const View& v) {
     }
 }
 
+// ---- Notices ----
+// Friend joined/left, chat, "X is talking to you": a small box styled like the game's text box at
+// the top of the screen, one at a time, each for NOTICE_MS. Unlike the game's own box it never
+// takes control from the player.
+u64 g_noticeShown = 0;   // ms the front notice has been visible so far
+u64 g_noticeLast = 0;
+
+std::string ExpandNotice(const char* t) {
+    std::string out;
+    for (const char* p = t; *p; p++) {
+        if (*p == 1 && p[1] && p[2] && p[3]) {
+            u16 species = (u16)((p[1] & 0x7F) | (p[2] & 0x7F) << 7);
+            out += MonName(species, (u8)p[3]);
+            p += 3;
+        } else {
+            out += *p;
+        }
+    }
+    return out;
+}
+
+void DrawNotice(const Screen& s, const View& v, bool visible) {
+    u64 now = osGetTime();
+    u64 dt = g_noticeLast ? now - g_noticeLast : 0;
+    g_noticeLast = now;
+    if (!v.hasNotice) { g_noticeShown = 0; return; }
+    if (!visible) return; // paused: shown in full once the game's UI is gone
+    g_noticeShown += dt < 200 ? dt : 0;
+    if (g_noticeShown >= NOTICE_MS) {
+        g_session.lock.Lock();
+        if (g_session.noticeCount > 0) {
+            for (int i = 1; i < g_session.noticeCount; i++) g_session.notices[i - 1] = g_session.notices[i];
+            g_session.noticeCount--;
+        }
+        g_session.lock.Unlock();
+        g_noticeShown = 0;
+        return;
+    }
+    std::string text = ExpandNotice(v.notice.text);
+    int w = TextWidth(text) + 20;
+    if (w > TOP_W - 8) { text.resize((TOP_W - 28) / 6); w = TextWidth(text) + 20; }
+    // Slides down from the top edge, back up at the end.
+    int slide = 0;
+    if (g_noticeShown < 150) slide = (int)(150 - g_noticeShown) / 8;
+    else if (g_noticeShown > NOTICE_MS - 150) slide = (int)(g_noticeShown - (NOTICE_MS - 150)) / 8;
+    const int H = 20, X = (TOP_W - w) / 2, Y = 18 - slide;
+    const Color border(84, 92, 110), panel(250, 250, 250), line(206, 214, 228), ink(56, 56, 64);
+    Rect(s, X + 2, Y, w - 4, 2, border);
+    Rect(s, X + 2, Y + H - 2, w - 4, 2, border);
+    Rect(s, X, Y + 2, 2, H - 4, border);
+    Rect(s, X + w - 2, Y + 2, 2, H - 4, border);
+    Rect(s, X + 1, Y + 1, 1, 1, border);
+    Rect(s, X + w - 2, Y + 1, 1, 1, border);
+    Rect(s, X + 1, Y + H - 2, 1, 1, border);
+    Rect(s, X + w - 2, Y + H - 2, 1, 1, border);
+    Rect(s, X + 2, Y + 2, w - 4, H - 4, panel);
+    Rect(s, X + 4, Y + 4, w - 8, H - 8, line, false);
+    if (v.notice.from) Rect(s, X + 6, Y + 6, 3, 8, kPlayerColors[v.notice.from <= MAX_ID ? v.notice.from : 0]);
+    Text(s, text, X + 12, Y + 5, ink);
+}
+
+// ---- Trades ----
+// Both sides accepted: write their Pokemon into our offered slot, but only on the plain field
+// (no menu, text box, script or battle), and only if that slot still holds what we offered.
+void FinishTrade(const View& v) {
+    g_session.lock.Lock();
+    Trade& t = g_session.trade;
+    if (!t.pendingWrite || !v.me.inField || v.me.suspended || v.me.locked || v.me.menuOpen ||
+        game::GameScriptRunning()) {
+        g_session.lock.Unlock();
+        return;
+    }
+    u8 now[game::PK_SIZE];
+    std::string them = g_session.remotes[t.partner].name;
+    u8 partner = t.partner;
+    bool same = game::ReadPartySlot(t.mySlot, now) && std::memcmp(now, t.mine, game::PK_SIZE) == 0;
+    if (same && game::WritePartySlot(t.mySlot, t.theirs)) {
+        u16 species = 0;
+        u8 level = 0;
+        game::DescribePokemon(t.theirs, species, level);
+        PushNotice("Trade complete! You received " + MonName(species, level) + ".", partner);
+    } else {
+        PushNotice("Trade failed: your party changed.", partner);
+    }
+    t = Trade();
+    g_session.lock.Unlock();
+}
+
+// ---- Watching a friend's battle ----
+// While the game's text box shows what's out in a friend's battle, the bottom screen lists both
+// sides with HP bars, updating live.
+void DrawBattlePanel(const Screen& s, const Remote& r) {
+    const Color ink(235, 235, 240), dim(150, 150, 160);
+    Rect(s, 0, 0, BOT_W, BOT_H, Color(8, 14, 24, 235));
+    Text(s, std::string(r.name) + "'s battle", 8, 4, kAccent);
+    int y = 20;
+    for (int side = 0; side < 2; side++) {
+        Text(s, side == 0 ? std::string(r.name) + "'s team" : "Opponent", 8, y, dim);
+        y += 12;
+        for (int i = 0; i < r.battle.count[side] && y < BOT_H - 12; i++) {
+            const game::BattleMon& m = r.battle.mon[side][i];
+            std::string label = MonName(m.species, m.level);
+            if (i == 0) label = "> " + label;
+            Text(s, label, 12, y, m.hp ? ink : dim);
+            constexpr int BX = 170, BW = 80;
+            int fill = m.maxHp ? (int)(BW * (u32)m.hp / m.maxHp) : 0;
+            float frac = m.maxHp ? (float)m.hp / m.maxHp : 0;
+            Color bar = frac > 0.5f ? Color(70, 220, 110) : frac > 0.2f ? Color(240, 200, 60) : Color(235, 70, 60);
+            Rect(s, BX - 1, y + 2, BW + 2, 7, Color(40, 44, 52));
+            Rect(s, BX, y + 3, fill, 5, bar);
+            char hp[16];
+            snprintf(hp, sizeof hp, "%u/%u", (unsigned)m.hp, (unsigned)m.maxHp);
+            Text(s, hp, BX + BW + 6, y, dim);
+            y += 13;
+        }
+        y += 6;
+    }
+}
+
 void DrawStatus(const Screen& s, const View& v) {
     bool ok = v.status == NetStatus::Connected;
     std::string line = ok ? ("oras-coop  " + v.room + "  #" + std::to_string(v.myId)) : v.statusText;
@@ -422,32 +572,30 @@ void DrawTop(const Screen& s) {
     UpdateTalk(v);
     TrackDoors(v);
     UpdatePuppets(v.puppets, v.me, v.remotes, v.myId, g_talk.open ? g_talk.id : 0);
+    FinishTrade(v);
     // The X menu dims the field and the game's own text boxes sit where our labels go: step aside.
     // (The lock comes a few frames before the menu bit; once the menu is up the game stops
     // redrawing the top screen, so whatever we drew last would stay frozen on it.)
     bool gameUi = v.me.menuOpen || v.me.locked;
     if (!gameUi) DrawStatus(s, v);
+    DrawNotice(s, v, !gameUi && v.me.inField);
     if (!v.overlay || gameUi) return;
     for (int id = 1; id <= MAX_ID; id++) {
         if (id != v.myId && Visible(v.remotes[id], v.me)) DrawMarker(s, id, v.remotes[id], v);
     }
     DrawNotes(s, v);
-    if (g_talk.open && !g_talk.native) {
-        DrawTalkBox(s, g_talk, kPlayerColors[g_talk.id]);
-        return; // the chat line would sit under the box
-    }
-    if (!v.chat.empty() && osGetTime() - v.chatTime < CHAT_SHOW_MS) {
-        int w = TextWidth(v.chat) + 8;
-        Rect(s, 4, TOP_H - 16, w, 13, kBg);
-        Text(s, v.chat, 8, TOP_H - 15, Color(255, 230, 90));
-    }
+    if (g_talk.open && !g_talk.native) DrawTalkBox(s, g_talk, kPlayerColors[g_talk.id]);
 }
 
 void DrawBottom(const Screen& s) {
     const View& v = g_view; // filled by the top-screen pass this frame
-    // Off while the game runs a script (dialogs, yes/no prompts, battles): our list and radar
-    // would cover its touch buttons.
-    if (!v.overlay || v.me.suspended || v.me.menuOpen || v.me.locked) return;
+    if (g_talk.open && g_talk.id >= 1 && g_talk.id <= MAX_ID && InBattle(v.remotes[g_talk.id])) {
+        DrawBattlePanel(s, v.remotes[g_talk.id]);
+        return;
+    }
+    // Off outside the field (title, battles) and while the game runs a script (dialogs, yes/no
+    // prompts): our list and radar would cover its touch buttons.
+    if (!v.overlay || !v.me.inField || v.me.suspended || v.me.menuOpen || v.me.locked) return;
 
     // Radar: 90x90 box in the top-right corner, north up, our player in the centre.
     constexpr int R = 45, CX = BOT_W - R - 4, CY = R + 4;
@@ -498,7 +646,7 @@ bool FriendGreeting(u16 charId, char* out, int len) {
     if (id < 1 || id > MAX_ID || len < 2) return false;
     g_session.lock.Lock();
     const Remote& r = g_session.remotes[id];
-    snprintf(out, len, "%s", r.greeting[0] ? r.greeting : "...");
+    snprintf(out, len, "%s", FriendLine(r).c_str());
     std::string name = r.name;
     g_session.pendingTalk = (u8)id;
     g_session.lock.Unlock();

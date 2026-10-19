@@ -384,3 +384,24 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
   the 10050 request, file 0x3F0). Text: DllField's GetString import stub `0x006F32B8` is pointed at
   our function, which fills line 0x7FF0. (A CTRPF MITM hook on GetString itself crashed: worker
   threads call it and get no hook context.)
+
+### Battles, the CRO slot, species names, the party (2026-10-19)
+
+- **One CRO slot at 0x006F3000** holds DllField on the field and **DllBattle** in a battle; header
+  +0x84 = name address (0x00802000 "DllField", 0x007DA000 "DllBattle"). In a battle the player's
+  move models stay in memory with the field flags still set, but every DllField function and stub
+  is gone: calling spawn/delete/actions/rides then would crash. The plugin gates `inField` and
+  those calls on DllField being in the slot.
+- **Battle state**: DllBattle code has the global's address in a literal at `0x0074580C`
+  (`ldr r7,[pc,#0x68]` in the function at 0x745790). Global (heap) = { battle object, side table }.
+  Side table +4: per side 6 pointers + u32 count, 0x1C bytes per side (side 0 = us, 1 = opponent);
+  slot 0 = the Pokemon out (the order follows switches; +0x84 has the original order). Battle
+  Pokemon: +0x0C species, +0x0E max HP, +0x10 HP, +0x18 u8 level. Verified on a wild Wingull (Route
+  109 surf): 48/48 → 0/48 after Flamethrower; ours 219/300, 356/356, 120/120.
+- **Species names**: resident message file with 812 lines (line = dex number), same address on the
+  field and in battles (0x08021394 this boot); decoded like the place names. Moves: 622 lines,
+  abilities: 192, items: 776.
+- **Party**: 6 pointers at **0x08CFB1E0** + u32 count at 0x08CFB1F8 (boot-time allocation, same in
+  every run seen). Slot object (vtable 0x005DE89C): +4 → encrypted PK6 data (0xE8), +8 → encrypted
+  party stats (0x1C; level at +4, HP at +8/+0xA after decryption with the data's EC). Writing both
+  blocks from another game's Pokemon shows up in the game's party screen straight away (tested).

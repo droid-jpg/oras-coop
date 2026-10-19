@@ -4,7 +4,8 @@
 //                            [--speed 0.05] [--anim 0x10] [--stopgo] [--model 0xab]
 // --speed radians per update (0.05 ~ 40 units/s at r=54), --anim the animation id sent while
 // moving (0x10 = walk), --stopgo walks 4 s then stands 2 s to test idle/walk switching.
-// --listen only prints what it receives (doesn't move).
+// --listen only prints what it receives (doesn't move). --busy sends the busy bit (as in a cutscene)
+// while walking; --battle also sends a made-up battle (T_BATTLE) whose HP ticks down.
 import net from 'node:net';
 
 const args = Object.fromEntries(
@@ -20,11 +21,12 @@ const opt = {
   speed: Number(args.speed ?? 0.05), anim: Number(args.anim ?? 0x10), stopgo: !!args.stopgo,
   model: Number(args.model ?? 0xab), // player model sent to others: 0xAB May, 0xAC Brendan
   // --x2/--y2 --after N: move the circle centre to (x2,y2) after N seconds (tests moved collision)
+  busy: !!args.busy, battle: !!args.battle,
   x2: args.x2 && Number(args.x2), y2: args.y2 && Number(args.y2), after: Number(args.after ?? 0),
 };
 
 const FRAME = 48;
-const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8 };
+const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12 };
 const names = {};
 const frame = (type) => { const b = Buffer.alloc(FRAME); b[0] = type; b.writeUInt16LE(1, 2); return b; };
 const cstr = (b, o, n) => { const s = b.subarray(o, o + n); const z = s.indexOf(0); return s.subarray(0, z < 0 ? n : z).toString('latin1'); };
@@ -51,6 +53,9 @@ sock.on('data', (d) => {
         if (opt.listen) console.log(`state #${id} ${names[id] ?? ''} map=${f.readUInt16LE(4)} facing=${f.readUInt16LE(6)} x=${f.readFloatLE(8).toFixed(2)} y=${f.readFloatLE(16).toFixed(2)} anim=0x${f[36].toString(16)} model=0x${f.readUInt16LE(38).toString(16)} t=${f.readUInt32LE(40)}`);
         break;
       case T.CHAT: console.log(`chat #${id} ${names[id] ?? ''}: ${cstr(f, 4, 40)}`); break;
+      case T.TALK: console.log(`talk #${id} ${names[id] ?? ''} -> #${f[4]}`); break;
+      case T.BATTLE: console.log(`battle #${id} side=${f[4]} count=${f[5]}` + [...Array(f[5])].map((_, i) => ` [${f.readUInt16LE(6 + i * 7)} ${f.readUInt16LE(8 + i * 7)}/${f.readUInt16LE(10 + i * 7)} L${f[12 + i * 7]}]`).join('')); break;
+      case T.TRADE: console.log(`trade #${id} op=${f[4]} to=#${f[5]} chunk=${f[6]}/${f[7]}`); break;
       case T.ERROR: console.log(`error code ${f[4]}`); break;
     }
   }
@@ -79,9 +84,25 @@ setInterval(() => {
   s.writeFloatLE(dir[0], 28); s.writeFloatLE(dir[1], 32);
   s.writeUInt8(moving && opt.radius > 0 ? opt.anim : 0, 36);
   s.writeUInt16LE(opt.model, 38);
+  s.writeUInt8(opt.busy || opt.battle ? 1 : 0, 37); // status bit 0: busy
   s.writeUInt32LE(Date.now() >>> 0, 40); // sender clock (ms), lets receivers interpolate
   sock.write(s);
 }, 66);
+
+if (opt.battle) {
+  // Our team: species 258 Lv12 and 255 Lv10; the opponent: 261 Lv8. Opponent HP ticks down.
+  let foeHp = 26;
+  setInterval(() => {
+    if (!myId) return;
+    foeHp = foeHp > 2 ? foeHp - 2 : 26;
+    const sides = [[[258, 31, 35, 12], [255, 30, 30, 10]], [[261, foeHp, 26, 8]]];
+    sides.forEach((mons, side) => {
+      const b = frame(T.BATTLE); b[4] = side; b[5] = mons.length;
+      mons.forEach(([sp, hp, max, lv], i) => { const o = 6 + i * 7; b.writeUInt16LE(sp, o); b.writeUInt16LE(hp, o + 2); b.writeUInt16LE(max, o + 4); b[o + 6] = lv; });
+      sock.write(b);
+    });
+  }, 1000);
+}
 
 if (!opt.listen) {
   setTimeout(() => { const c = frame(T.CHAT); c.write('hello from the bot', 4, 'latin1'); sock.write(c); }, 1500);

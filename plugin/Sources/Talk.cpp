@@ -186,6 +186,7 @@ bool PatchTextStub() {
 // OUR_ID. 1 = ready, 0 = the game is busy (a script file is loading), < 0 = can't here.
 int PrepareMessage(const char* text, bool allowRunning) {
     if (!s_imageSize) return -1;
+    if (!FieldModuleLoaded()) return -2; // battle: DllField (and its text stub) isn't there
     u32 field = 0, mgr = 0, mgr2 = 0, container = 0, entries = 0, loader = 0, heap = 0, cur = 0;
     if (!Read(FIELD_PTR, field) || !Read(field + FIELD_SCRIPT_MGR, mgr) || !Read(SCRIPT_MGR_PTR, mgr2) || mgr != mgr2)
         return -2; // not on the field (or a layout we don't know)
@@ -215,6 +216,7 @@ int PrepareMessage(const char* text, bool allowRunning) {
     int lineStart = 0, lastSpace = -1;
     for (const char* p = text; *p && s_textLen < (int)(sizeof s_text / 2) - 1; p++) {
         u16 c = (u8)*p;
+        if (c == '\n') { s_text[s_textLen++] = 0x0A; lineStart = s_textLen; lastSpace = -1; continue; }
         if (c == ' ') lastSpace = s_textLen;
         s_text[s_textLen++] = c;
         if (s_textLen - lineStart > 32 && lastSpace > lineStart) {

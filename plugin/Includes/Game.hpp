@@ -154,6 +154,33 @@ bool GameScriptRunning();
 // Returns false while that text isn't found yet (it is searched for a few pages per call).
 bool PlaceName(u16 zone, char* out, int len);
 
+// Species name from the game's own text ("Wingull"); false while that text isn't found yet.
+bool SpeciesName(u16 species, char* out, int len);
+
+// Which game module is loaded in the shared CRO slot. During a battle DllField is unloaded:
+// nothing that calls field code (spawn, delete, actions, rides, our text box) may run then.
+bool FieldModuleLoaded();
+bool BattleModuleLoaded();
+
+// ---- Battles (Battle.cpp, read-only) ----
+constexpr int BATTLE_PARTY = 6;
+struct BattleMon { u16 species = 0, hp = 0, maxHp = 0; u8 level = 0; };
+struct BattleState {
+    bool active = false;
+    u8 count[2] = { 0, 0 };              // side 0 = the player's team, 1 = the opponent
+    BattleMon mon[2][BATTLE_PARTY];      // slot 0 = the Pokemon out right now
+};
+// Reads the running battle; false (and active=false) outside battles or on an unknown layout.
+bool ReadBattle(BattleState& out);
+
+// ---- Party (Battle.cpp) ----
+// A party Pokemon as the game keeps it: the encrypted data block, then the encrypted party stats.
+constexpr int PK_DATA = 0xE8, PK_STATS = 0x1C, PK_SIZE = PK_DATA + PK_STATS;
+int PartyCount();
+bool ReadPartySlot(int slot, u8* out);         // PK_SIZE bytes
+bool WritePartySlot(int slot, const u8* in);   // replaces that slot (field only, no menu open)
+bool DescribePokemon(const u8* pk, u16& species, u8& level);
+
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);
 

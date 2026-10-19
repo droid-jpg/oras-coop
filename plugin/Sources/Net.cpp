@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <malloc.h>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include "Session.hpp"
 #include "Game.hpp"
 
@@ -17,6 +19,26 @@ using namespace CTRPluginFramework;
 namespace coop {
 
 Session g_session;
+
+void PushNotice(const std::string& text, u8 from) {
+    if (g_session.noticeCount == MAX_NOTICES) { // full: drop the oldest
+        for (int i = 1; i < MAX_NOTICES; i++) g_session.notices[i - 1] = g_session.notices[i];
+        g_session.noticeCount--;
+    }
+    Notice& n = g_session.notices[g_session.noticeCount++];
+    n = Notice();
+    snprintf(n.text, sizeof n.text, "%s", text.c_str());
+    n.from = from;
+}
+
+u32 TradeHash(const Trade& t, u8 myId) {
+    const u8* first = myId < t.partner ? t.mine : t.theirs;
+    const u8* second = myId < t.partner ? t.theirs : t.mine;
+    u32 h = 2166136261u; // FNV-1a
+    for (int i = 0; i < game::PK_SIZE; i++) h = (h ^ first[i]) * 16777619u;
+    for (int i = 0; i < game::PK_SIZE; i++) h = (h ^ second[i]) * 16777619u;
+    return h;
+}
 
 namespace {
 
@@ -116,6 +138,64 @@ void ClearRemotes() {
     Guard g(g_session.lock);
     for (auto& r : g_session.remotes) r = Remote();
     g_session.myId = 0;
+    g_session.trade = Trade(); // a trade never survives a reconnect
+}
+
+bool SameBattle(const game::BattleState& a, const game::BattleState& b) {
+    if (a.active != b.active) return false;
+    for (int s = 0; s < 2; s++) {
+        if (a.count[s] != b.count[s]) return false;
+        for (int i = 0; i < a.count[s]; i++) {
+            const game::BattleMon &x = a.mon[s][i], &y = b.mon[s][i];
+            if (x.species != y.species || x.hp != y.hp || x.maxHp != y.maxHp || x.level != y.level) return false;
+        }
+    }
+    return true;
+}
+
+// Notice text for a traded Pokemon: "\x01" + species + level, resolved to "Wingull Lv20" by the
+// overlay (the game thread; this thread never reads game memory).
+std::string Describe(const u8* pk) {
+    u16 species = 0;
+    u8 level = 0;
+    if (!game::DescribePokemon(pk, species, level)) return "a Pokemon";
+    // 7 bits per byte with the top bit set, so no byte is 0.
+    char buf[8] = { 1, (char)(0x80 | (species & 0x7F)), (char)(0x80 | species >> 7), (char)level, 0 };
+    return buf;
+}
+
+// A trade step from player `id` addressed to us (lock held).
+void ApplyTrade(const Frame& f, u8 id) {
+    Trade& t = g_session.trade;
+    std::string name = g_session.remotes[id].name;
+    u8 op = f.get<u8>(4);
+    if (op == TRADE_CANCEL) {
+        if (t.partner == id) {
+            t = Trade();
+            PushNotice(name + " cancelled the trade.", id);
+        }
+        return;
+    }
+    if (t.partner && t.partner != id) return; // busy with someone else
+    if (op == TRADE_OFFER) {
+        constexpr int CHUNKS = (game::PK_SIZE + TRADE_CHUNK - 1) / TRADE_CHUNK;
+        u8 chunk = f.get<u8>(6);
+        if (chunk >= CHUNKS || f.get<u8>(7) != CHUNKS) return;
+        if (!t.partner) { t = Trade(); t.partner = id; }
+        if (chunk == 0) { t.theirChunks = 0; t.theirComplete = false; t.iAccepted = t.theyAccepted = false; }
+        int off = chunk * TRADE_CHUNK, len = game::PK_SIZE - off < TRADE_CHUNK ? game::PK_SIZE - off : TRADE_CHUNK;
+        std::memcpy(t.theirs + off, f.b + 8, len);
+        t.theirChunks |= 1u << chunk;
+        if (t.theirChunks == (1u << CHUNKS) - 1 && !t.theirComplete) {
+            t.theirComplete = true;
+            PushNotice(name + " offers " + Describe(t.theirs) + "! (SELECT > Trade)", id);
+        }
+    } else if (op == TRADE_ACCEPT && t.partner == id) {
+        t.theyAccepted = true;
+        t.theirHash = f.get<u32>(8);
+        if (t.iAccepted && t.theirHash == TradeHash(t, g_session.myId)) t.pendingWrite = true;
+        else if (!t.iAccepted) PushNotice(name + " accepted the trade. (SELECT > Trade)", id);
+    }
 }
 
 void Apply(const Frame& f) {
@@ -134,17 +214,17 @@ void Apply(const Frame& f) {
             r = Remote();
             r.active = true;
             f.getStr(4, 16, r.name);
-            g_session.lastChat = std::string(r.name) + " joined";
-            g_session.lastChatTime = osGetTime();
+            PushNotice(std::string(r.name) + " joined!", id);
             g_session.greetChanged = true; // the server keeps no state: the newcomer needs ours
         }
         break;
     case T_LEAVE:
         if (id >= 1 && id <= MAX_ID) {
             Remote& r = g_session.remotes[id];
-            if (r.active) {
-                g_session.lastChat = std::string(r.name) + " left";
-                g_session.lastChatTime = osGetTime();
+            if (r.active) PushNotice(std::string(r.name) + " left.", id);
+            if (g_session.trade.partner == id) {
+                g_session.trade = Trade();
+                PushNotice("The trade was cancelled.");
             }
             r = Remote();
         }
@@ -168,6 +248,7 @@ void Apply(const Frame& f) {
             r.away = st & ST_AWAY;
             r.riding = st & ST_RIDING;
             r.surfing = st & ST_SURFING;
+            if (!r.away) r.battle = game::BattleState(); // back on the field
             u64 now = osGetTime();
             if (mapChanged) {
                 r.dx = r.tx; r.dz = r.tz; r.dy = r.ty;
@@ -202,8 +283,7 @@ void Apply(const Frame& f) {
         if (id >= 1 && id <= MAX_ID) {
             char text[40];
             f.getStr(4, 40, text);
-            g_session.lastChat = std::string(g_session.remotes[id].name) + ": " + text;
-            g_session.lastChatTime = osGetTime();
+            PushNotice(std::string(g_session.remotes[id].name) + ": " + text, id);
         }
         break;
     case T_GREET:
@@ -211,9 +291,30 @@ void Apply(const Frame& f) {
         break;
     case T_TALK:
         if (id >= 1 && id <= MAX_ID && f.get<u8>(4) == g_session.myId) {
-            g_session.lastChat = std::string(g_session.remotes[id].name) + " is talking to you!";
-            g_session.lastChatTime = osGetTime();
+            PushNotice(std::string(g_session.remotes[id].name) + " is talking to you!", id);
         }
+        break;
+    case T_BATTLE:
+        if (id >= 1 && id <= MAX_ID) {
+            Remote& r = g_session.remotes[id];
+            u8 side = f.get<u8>(4), count = f.get<u8>(5);
+            if (side > 1 || count > game::BATTLE_PARTY) break;
+            if (count == 0) { r.battle = game::BattleState(); break; }
+            r.battle.count[side] = count;
+            for (int i = 0; i < count; i++) {
+                game::BattleMon& m = r.battle.mon[side][i];
+                int off = 6 + i * BATTLE_ENTRY;
+                m.species = f.get<u16>(off);
+                m.hp = f.get<u16>(off + 2);
+                m.maxHp = f.get<u16>(off + 4);
+                m.level = f.get<u8>(off + 6);
+            }
+            r.battle.active = r.battle.count[0] && r.battle.count[1];
+            r.battleTime = osGetTime();
+        }
+        break;
+    case T_TRADE:
+        if (id >= 1 && id <= MAX_ID && f.get<u8>(5) == g_session.myId) ApplyTrade(f, id);
         break;
     case T_ERROR: {
         u8 code = f.get<u8>(4);
@@ -270,11 +371,17 @@ void RunSession(const Config& cfg) {
     u64 suspendedSince = 0;
     u64 lastSend = 0;
     u32 seq = 0;
+    game::BattleState lastBattle;
+    u64 lastBattleSend = 0;
 
     while (g_session.running) {
         std::string chat, greeting;
         game::PlayerState s;
         u8 talkTo = 0;
+        game::BattleState battle;
+        Trade trade;
+        bool tradeOffer = false, tradeAccept = false, tradeCancel = false;
+        u32 tradeHash = 0;
         {
             Guard g(g_session.lock);
             if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
@@ -286,6 +393,13 @@ void RunSession(const Config& cfg) {
             }
             talkTo = g_session.pendingTalk;
             g_session.pendingTalk = 0;
+            battle = g_session.localBattle;
+            Trade& t = g_session.trade;
+            tradeOffer = t.sendOffer; tradeAccept = t.sendAccept; tradeCancel = t.sendCancel;
+            t.sendOffer = t.sendAccept = t.sendCancel = false;
+            if (tradeOffer || tradeAccept || tradeCancel) trade = t;
+            if (tradeAccept) tradeHash = TradeHash(t, g_session.myId);
+            if (tradeCancel) t = Trade();
         }
 
         u64 now = osGetTime();
@@ -323,6 +437,54 @@ void RunSession(const Config& cfg) {
         if (talkTo) {
             Frame t(T_TALK);
             t.put<u8>(4, talkTo);
+            if (!conn.Send(t)) break;
+        }
+
+        // Our battle, for friends who walk up to our trainer: on every change, else every 2 s.
+        if (battle.active && (!SameBattle(battle, lastBattle) || now - lastBattleSend >= 2000)) {
+            bool ok = true;
+            for (u8 side = 0; side < 2 && ok; side++) {
+                Frame b(T_BATTLE);
+                b.put<u8>(4, side);
+                b.put<u8>(5, battle.count[side]);
+                for (int i = 0; i < battle.count[side]; i++) {
+                    const game::BattleMon& m = battle.mon[side][i];
+                    int off = 6 + i * BATTLE_ENTRY;
+                    b.put<u16>(off, m.species);
+                    b.put<u16>(off + 2, m.hp);
+                    b.put<u16>(off + 4, m.maxHp);
+                    b.put<u8>(off + 6, m.level);
+                }
+                ok = conn.Send(b);
+            }
+            if (!ok) break;
+            lastBattle = battle;
+            lastBattleSend = now;
+        } else if (!battle.active && lastBattle.active) {
+            if (!conn.Send(Frame(T_BATTLE))) break; // count 0: over
+            lastBattle = game::BattleState();
+        }
+
+        if (tradeOffer) {
+            constexpr int CHUNKS = (game::PK_SIZE + TRADE_CHUNK - 1) / TRADE_CHUNK;
+            bool ok = true;
+            for (int c = 0; c < CHUNKS && ok; c++) {
+                Frame t(T_TRADE);
+                t.put<u8>(4, TRADE_OFFER);
+                t.put<u8>(5, trade.partner);
+                t.put<u8>(6, (u8)c);
+                t.put<u8>(7, (u8)CHUNKS);
+                int off = c * TRADE_CHUNK, len = game::PK_SIZE - off < TRADE_CHUNK ? game::PK_SIZE - off : TRADE_CHUNK;
+                std::memcpy(t.b + 8, trade.mine + off, len);
+                ok = conn.Send(t);
+            }
+            if (!ok) break;
+        }
+        if (tradeAccept || tradeCancel) {
+            Frame t(T_TRADE);
+            t.put<u8>(4, tradeCancel ? TRADE_CANCEL : TRADE_ACCEPT);
+            t.put<u8>(5, trade.partner);
+            t.put<u32>(8, tradeHash);
             if (!conn.Send(t)) break;
         }
 

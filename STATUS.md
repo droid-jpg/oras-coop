@@ -7,7 +7,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 | Feature | State |
 |---|---|
-| Relay server (`server/server.mjs`) | ✅ rooms, IDs stamped server-side, STATE/CHAT/JOIN/LEAVE, timeouts |
+| Relay server (`server/server.mjs`) | ✅ rooms, IDs stamped server-side, STATE/CHAT/JOIN/LEAVE/BATTLE/TRADE, timeouts |
 | Plugin connects, status HUD, chat, player list, radar | ✅ tested in Azahar |
 | Name labels / off-screen arrows | ✅ projected through the game's own camera — sit right above heads, indoors and out |
 | Finding the player | ✅ player state object 0x08C6E880 (stable), incremental fallback scans (no frame hitches) |
@@ -26,6 +26,11 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Map names | ✅ player list shows where friends are ("Slateport City", "Route 109"), read from the game's own place-name text |
 | Game menus and text boxes | ✅ the overlay steps aside while the X menu or a game text box is open (player mm+0x08 bits 0x8 / 0x02000000) |
 | Doors and map edges | ✅ a friend leaving your map leaves a fading "Name -> Place" note where they left; arriving shows "Name arrived" |
+| Notices | ✅ "Name joined!", "Name left.", chat and "Name is talking to you!" show one at a time in a small box styled like the game's text box at the top of the screen (3.5 s each). They never take control from you (tested: walking straight through join, chat and leave). Notices that arrive during a battle, menu or text box wait until it's over |
+| Joins/leaves during battles and cutscenes | ✅ nothing is spawned or deleted while DllField is unloaded (battles) or while a script, text box or menu is up; it happens once that ends. Tested: three friends joining and leaving on your map mid-battle, and a friend leaving while you were in a text box with them |
+| Busy friends keep animating | ✅ a friend walking under script control (cutscene) moves its legs instead of sliding |
+| Watching a friend's battle | ✅ press A on a friend in a battle: the game's text box shows what each side has out with HP, and the bottom screen lists both teams with live HP bars. Read from DllBattle's memory (`Battle.cpp`), sent as BATTLE frames. Tested on a real wild battle and a fake one |
+| Trading | ✅ SELECT → Trade: pick a friend and a party Pokémon, they offer one back, both accept, and each game swaps in the other Pokémon once back on the plain field (the game's own party screen shows it). Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows |
 | Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting) opens in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
 
 ## Known bugs (found playing over Tailscale, 2026-10-19)
@@ -67,10 +72,8 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 ## Ideas queue
 
-- **Polish: animations during cutscenes.** While a friend is in a cutscene (busy), their trainer
-  stops animating and just slides around. Keep driving walk/run (or freeze position) instead.
-- **Spectate a friend's battle.** Pressing A on a friend who is in a battle opens a popup above
-  them with their Pokémon sprites, active Pokémon, HP, etc. Needs a new frame type carrying the
-  battle state, sent while `status` busy is from a battle.
-- Trading / battles between players (large: needs the game's link-trade/battle protocols).
+- **Battles between players.** Not started. Needs the game's link-battle setup (DllBattle's
+  communication layer); expect several sessions of reverse engineering.
+- **Trade safety.** If the connection drops between the two ACCEPTs, one side can end up with
+  both Pokémon (or neither). A server-side commit step would close that gap.
 - Show friends on other maps' doors/warps (e.g. "Bot is inside"), and a /who list in chat.

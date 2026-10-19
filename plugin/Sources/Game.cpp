@@ -87,7 +87,7 @@ PlayerState Read() {
     s.valid = true;
     ReadPlayerDir(s.dirX, s.dirY, &s.anim);
     s.model = PlayerModel();
-    s.inField = s.model && PlayerFieldActive();
+    s.inField = s.model && FieldModuleLoaded() && PlayerFieldActive();
     s.surfing = s.inField && PlayerSurfing();
     s.riding = s.inField && !s.surfing && PlayerRiding();
     s.suspended = s.inField && PlayerSuspended();
@@ -377,6 +377,7 @@ bool RivalIsMay() {
 }
 
 u32 SpawnCharacter(u16 id, u16 model, u16 tileX, u16 tileY) {
+    if (!FieldModuleLoaded()) return 0; // battle: the field code is unloaded
     u32 player = FindPlayerSlot();
     if (!player) return 0;
 
@@ -427,6 +428,7 @@ constexpr u32 FN_SET_RIDE = 0x003F9C08;  // (mm, mode): mm+0xA2C (bike 2, surf 0
 RideDebug g_rideDebug;
 
 int AttachRide(u32 mm, const Ride& rd) {
+    if (!FieldModuleLoaded()) return g_rideDebug.result = -1;
     u32 ride = rd.model;
     RideDebug& d = g_rideDebug;
     d = RideDebug();
@@ -463,6 +465,7 @@ int AttachRide(u32 mm, const Ride& rd) {
 constexpr u32 FN_DESPAWN = 0x003FB3A0;
 
 bool DespawnCharacter(u32 mm, u16 id) {
+    if (!FieldModuleLoaded()) return false;
     MoveModel m;
     if (!ReadSlot(mm, m) || m.id != id) return false;
     using DespawnFn = void (*)(u32 mm);
@@ -474,6 +477,7 @@ constexpr u32 FN_SET_ACTION = 0x003FB1B4;
 constexpr u32 MM_ACTION_LOCK = 0x9F8;   // u8 + u32 @0x9FC: setter asserts if both non-zero
 
 bool SetAction(u32 mm, u16 code, u8 dir) {
+    if (!FieldModuleLoaded()) return false;
     MoveModel m;
     if (code > 0x103 || !ReadSlot(mm, m)) return false;
     u8 lock = 0;
@@ -524,7 +528,8 @@ constexpr u32 MSG_VTABLE = 0x005DE400;
 constexpr u32 MSG_IN_MEMORY = 0x0C, MSG_HEADER = 0x18, MSG_SECTION = 0x1C;
 constexpr u16 PLACE_LINES = 0x164;
 
-static bool IsPlaceText(u32 md) {
+// A resident message file with `wantLines` lines (one language).
+static bool IsTextWithLines(u32 md, u16 wantLines) {
     u8 inMemory = 0;
     u32 header = 0, section = 0;
     u16 langs = 0, lines = 0;
@@ -532,7 +537,38 @@ static bool IsPlaceText(u32 md) {
            Process::Read32(md + MSG_HEADER, header) && Process::CheckAddress(header) &&
            Process::Read32(md + MSG_SECTION, section) && Process::CheckAddress(section) &&
            Process::Read16(header, langs) && langs == 1 && Process::Read16(header + 2, lines) &&
-           lines == PLACE_LINES;
+           lines == wantLines;
+}
+
+static bool IsPlaceText(u32 md) { return IsTextWithLines(md, PLACE_LINES); }
+
+// Decodes line `line` of message file `md` to ASCII.
+static bool DecodeLine(u32 md, u16 line, char* out, int len) {
+    u32 header = 0, section = 0, offset = 0;
+    u16 chars = 0;
+    bool encrypted = true;
+    u32 plain = 0;
+    Process::Read32(md + MSG_HEADER, header);
+    Process::Read32(md + MSG_SECTION, section);
+    if (Process::Read32(header + 8, plain)) encrypted = plain == 0;
+    if (!Process::Read32(section + line * 8 + 4, offset) || !Process::Read16(section + line * 8 + 8, chars))
+        return false;
+    u32 key = ((line + 3) * 0x2983) & 0xFFFF;
+    int n = 0;
+    for (u16 i = 0; i < chars && n < len - 1; i++) {
+        u16 c = 0;
+        if (!Process::Read16(section + offset + i * 2, c)) break;
+        if (encrypted) {
+            c ^= (u16)key;
+            key = ((key << 3) | (key >> 13)) & 0xFFFF;
+        }
+        if (c == 0) break;
+        if (c == 0xE9 || c == 0xC9) c = 'e';        // "Pokemon"
+        else if (c < 0x20 || c > 0x7E) c = '?';     // our font is ASCII
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return n > 0;
 }
 
 bool PlaceName(u16 zone, char* out, int len) {
@@ -551,31 +587,44 @@ bool PlaceName(u16 zone, char* out, int len) {
         md = scan.Step(MSG_VTABLE, IsPlaceText);
         if (!md) return false;
     }
-    u32 header = 0, section = 0, offset = 0;
-    u16 chars = 0;
-    bool encrypted = true;
-    u32 plain = 0;
-    Process::Read32(md + MSG_HEADER, header);
-    Process::Read32(md + MSG_SECTION, section);
-    if (Process::Read32(header + 8, plain)) encrypted = plain == 0;
-    if (!Process::Read32(section + place * 8 + 4, offset) || !Process::Read16(section + place * 8 + 8, chars))
-        return false;
-    u32 key = ((place + 3) * 0x2983) & 0xFFFF;
-    int n = 0;
-    for (u16 i = 0; i < chars && n < len - 1; i++) {
-        u16 c = 0;
-        if (!Process::Read16(section + offset + i * 2, c)) break;
-        if (encrypted) {
-            c ^= (u16)key;
-            key = ((key << 3) | (key >> 13)) & 0xFFFF;
-        }
-        if (c == 0) break;
-        if (c == 0xE9 || c == 0xC9) c = 'e';        // "Pokemon"
-        else if (c < 0x20 || c > 0x7E) c = '?';     // our font is ASCII
-        out[n++] = (char)c;
-    }
-    out[n] = 0;
-    return n > 0;
+    return DecodeLine(md, place, out, len);
 }
+
+// Species names: a resident message file of 812 lines, line = national dex number (1 = the first
+// species). Loaded from boot and kept through battles (same address on the field and in a battle).
+constexpr u16 SPECIES_LINES = 812;
+static bool IsSpeciesText(u32 md) { return IsTextWithLines(md, SPECIES_LINES); }
+
+bool SpeciesName(u16 species, char* out, int len) {
+    static u32 md = 0;
+    static Scanner scan;
+    if (len < 2 || species == 0 || species >= SPECIES_LINES) return false;
+    u32 vt = 0;
+    if (!md || !Process::Read32(md, vt) || vt != MSG_VTABLE || !IsSpeciesText(md)) {
+        md = scan.Step(MSG_VTABLE, IsSpeciesText);
+        if (!md) return false;
+    }
+    return DecodeLine(md, species, out, len);
+}
+
+// ---- Loaded game module ----
+// The field (DllField) and battle (DllBattle) code are CROs loaded into the same slot at
+// 0x006F3000; header +0x84 points at the module's name. In a battle DllField is gone, and so is
+// code the spawn/delete/action functions call into: calling them then would crash.
+constexpr u32 CRO_SLOT_NAME = 0x006F3084;
+constexpr u32 DLLFIELD_NAME = 0x00802000, DLLBATTLE_NAME = 0x007DA000;
+
+static bool ModuleIs(u32 nameAddr, const char* name) {
+    u32 at = 0;
+    if (!Process::Read32(CRO_SLOT_NAME, at) || at != nameAddr) return false;
+    for (int i = 0; name[i]; i++) {
+        u8 c = 0;
+        if (!Process::Read8(nameAddr + i, c) || c != (u8)name[i]) return false;
+    }
+    return true;
+}
+
+bool FieldModuleLoaded() { return ModuleIs(DLLFIELD_NAME, "DllField"); }
+bool BattleModuleLoaded() { return ModuleIs(DLLBATTLE_NAME, "DllBattle"); }
 
 } // namespace game
