@@ -25,6 +25,11 @@ constexpr float RUN_SPEED = 105.0f;     // units/s; walking is ~77 (18 units per
 constexpr u8 ANIM_MAX  = 0x30;          // ignore ids outside the on-foot range (bike, surf...)
 constexpr float MOVE_EPS = 0.25f;       // world units per frame that count as moving
 constexpr u64 MOVE_HOLD_MS = 200;       // keep the clip playing across small update gaps
+constexpr u64 MOUNT_ATTACH_MS = 5000;   // give up attaching a bike/surf model after this long
+constexpr u8 ANIM_BIKE = 0x38;          // seated on the Mach bike (what the rider sends at rest)
+constexpr u8 ANIM_SURF = 0x54;          // on the surf Pokémon (the surfer's clip)
+
+enum Mount : u8 { MOUNT_NONE, MOUNT_BIKE, MOUNT_SURF };
 constexpr float OVERLAP_OUT = 24.0f;    // after sharing a tile, block again once this far apart
 
 struct Spawned {
@@ -38,6 +43,10 @@ struct Spawned {
     u8 moveAnim = 0;                    // clip chosen for the current movement (0 = pick one)
     bool fromSender = false;            // moveAnim came from the sender's anim byte
     bool solid = true;                  // blocks us (off while it shares our tile)
+    Mount mountWanted = MOUNT_NONE;     // what the friend rides; a change respawns the character
+    u64 mountSince = 0;
+    bool mounted = false;               // ride model attached
+    bool mountFailed = false;           // couldn't attach: shown without it (runs on a bike)
 };
 
 Spawned s_spawned[MAX_ID + 1];
@@ -134,8 +143,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
     for (int id = 1; id <= MAX_ID; id++) {
         Spawned& s = s_spawned[id];
         const Remote& r = remotes[id];
-        // Surfing: no water mount for spawned characters yet, so no trainer standing on the sea.
-        bool want = enabled && id != myId && r.active && r.hasState && !r.surfing && r.map == me.map &&
+        bool want = enabled && id != myId && r.active && r.hasState && r.map == me.map &&
                     now - r.lastUpdate < STALE_MS;
 
         if (!want) {
@@ -166,8 +174,22 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         if (s.solid && sameTile) s.solid = false;
         else if (!s.solid && d2 > OVERLAP_OUT * OVERLAP_OUT) s.solid = true;
         if (!game::Puppet(s.mm, r.dx, r.dz, r.dy, dx, dy, s.solid)) { Forget(s); continue; } // slot reclaimed
-        // Bikes: no bike model on other characters yet (see NOTES.md), so they run instead.
-        game::SetAnim(s.mm, PickAnim(s, r, now));
+        // Bike / surf: attach the game's own ride model (it may need a moment to load). A change of
+        // mount, or getting off, respawns the character plain and starts over.
+        Mount mount = r.surfing ? MOUNT_SURF : r.riding ? MOUNT_BIKE : MOUNT_NONE;
+        if (mount != s.mountWanted) {
+            if (s.mountWanted != MOUNT_NONE) { Despawn(id, s, me.map); continue; }
+            s.mountWanted = mount;
+            s.mountSince = now;
+        }
+        if (mount != MOUNT_NONE && !s.mounted && !s.mountFailed) {
+            int res = game::AttachRide(s.mm, mount == MOUNT_SURF ? game::RIDE_SURF : game::RIDE_BIKE);
+            if (res == 1) s.mounted = true;
+            else if (res < 0 || now - s.mountSince > MOUNT_ATTACH_MS) s.mountFailed = true;
+        }
+        u8 anim = PickAnim(s, r, now);
+        if (s.mounted) anim = r.anim ? r.anim : mount == MOUNT_SURF ? ANIM_SURF : ANIM_BIKE; // rider's clip
+        game::SetAnim(s.mm, anim);
     }
 }
 

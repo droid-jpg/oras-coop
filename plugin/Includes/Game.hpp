@@ -77,6 +77,17 @@ bool DespawnCharacter(u32 mm, u16 id);
 // (FUN_003FB1B4(mm, code, dir) → DllField FUN_0072D128). code <= 0x103; dir 9 = keep facing.
 bool SetAction(u32 mm, u16 code, u8 dir);
 
+// Attaches a ride model to a character like the game's own mount (verified: friends' trainers
+// show the Mach bike / the surf Pokémon). Call every frame until it returns 1: 0 = still loading,
+// < 0 = can't (see g_rideDebug). Undo = respawn the character.
+struct Ride { u32 model; u8 form, mode; };  // ride model id, animation set (mm+0x59), mm+0xA2C
+constexpr Ride RIDE_BIKE = { 0x1B, 2, 2 };   // DllField FUN_007980BC
+constexpr Ride RIDE_SURF = { 0x01, 7, 0 };   // DllField FUN_007958B8
+// Last AttachRide call, for diagnostics (model instance, slot flags, ride status, result).
+struct RideDebug { u32 inst = 0; u8 used0 = 0, used1 = 0; u32 status = 0, attached = 0; int result = 0; };
+extern RideDebug g_rideDebug;
+int AttachRide(u32 mm, const Ride& ride);
+
 // True if `mm` is an in-use character slot holding object id `id`.
 bool SlotHasId(u32 mm, u16 id);
 

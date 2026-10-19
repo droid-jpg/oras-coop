@@ -272,9 +272,21 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
   `FUN_003F9C08(mm, 2)` (mm+0xA2C ride mode). Dismount step `FUN_00795A60`: anim 0, ride mode 1.
 - `FUN_003F5C2C(manager, mm, ride, slot)`: ride-model pool at manager+0x36BC (status 3 = loaded →
   attach to the model instance `FUN_004E3F90(mm)`); returns 1 also on non-attach paths.
-- Tried on a friend's trainer: call it + form 2 + ride mode 2 → form stuck at 2, ride mode back
-  to 1, **no bike visible**. Needs the import stubs inside FUN_003F5C2C resolved live (slot
-  query / attach targets). Reverted: friends on bikes show the run clip.
+- **✅ Solved (2026-10-19)**: stubs resolved live (`ldr pc,[pc,#-4]` + target):
+  0x19C608 → DllField FUN_00768FE0 (slot used? inst+0x1C0+slot, 2 slots),
+  0x19C610 → 0x7D2DB8 (ride status in pool; 3 = loaded), 0x19C618 → 0x735A94 (request),
+  0x19C620 → **FUN_007352AC(pool, inst, ride, mm, slot)** (creates the ride object, stores it in
+  inst+0x1C4+slot*4), 0x19C628 → 0x72CDE4(mm+0x96C) (refresh). inst = FUN_004E3F90(mm) needs
+  mm+0x08 bit 2 and mm+0xA18 — **0 for a few frames after spawning** (that was the earlier failure).
+- Plugin `AttachRide` does these steps itself, then FUN_003F31EC(mm, form) + FUN_003F9C08(mm,
+  mode), and plays the rider's own anim byte (bike seated 0x38). Verified: a friend's trainer sits
+  on the **Mach bike** and rides/turns; dismount → respawn plain.
+- **Surf mount** = DllField **FUN_007958B8**: FUN_003F5C2C(manager, mm, **ride 1**, 0), form **7**,
+  anim 0, action 0x66, render+0x140 |= 0x400, FUN_0077BCF8/BCCC, effect 8, flags 0x200000/
+  0x2000000/0x1000000/0x10000000, ride mode **0**, FUN_0077AEE0/AF80(inst, -1). With ride 1 /
+  form 7 / mode 0 a friend's trainer sits on the surf Pokémon (verified); landing → respawn.
+  Found via a breakpoint on the flag setter FUN_003F1688 (r1 = bit) — read-watchpoints on the
+  flags word fire every frame and stall the game.
 - Registered items wheel (Y): left Mach bike, right Eon Flute, up/down rods; pick with the D-pad.
 - GDB caution: a `mem.mjs` call killed by `timeout` can leave the emulator halted → the
   game freezes and the relay drops the player; `scratchpad/resume.mjs` sends c + D.

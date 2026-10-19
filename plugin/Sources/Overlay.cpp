@@ -168,8 +168,8 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
 
     bool onScreen = sx >= 8 && sx < TOP_W - 8 && sy >= 20 && sy < TOP_H - 8;
     if (onScreen) {
-        if (r.surfing) {
-            // Surfing: ripples on the water and a head-and-shoulders marker in their colour.
+        if (r.surfing && !IsPuppeted(id)) {
+            // Surfing without a trainer (mount failed / Real models off): ripples + a small marker.
             Rect(s, sx - 10, sy - 2, 20, 2, Color(220, 240, 255, 200));
             Rect(s, sx - 7, sy + 2, 14, 2, Color(170, 210, 255, 170));
             Rect(s, sx - 4, sy - 12, 8, 10, col);

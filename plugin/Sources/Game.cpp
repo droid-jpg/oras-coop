@@ -391,6 +391,59 @@ u32 SpawnCharacter(u16 id, u16 model, u16 tileX, u16 tileY) {
     return reinterpret_cast<SpawnFn>(FN_SPAWN)(manager, entry, zone, 0);
 }
 
+// ---- Ride attachments (bike / surf mount) ----
+// Mirrors FUN_003F5C2C(manager, mm, ride, slot), the game's attach step, one call at a time so we
+// can see where it stops. Bike mount = DllField FUN_007980BC (ride 0x1B, form 2, mode 2); surf
+// mount = DllField FUN_007958B8 (ride 1, form 7, mode 0):
+//   inst   = FUN_004E3F90(mm)                 model instance (needs mm+0x08 bit 2 + mm+0xA18)
+//   slot   free when inst[0x1C0 + slot] == 0  (2 slots)
+//   status = stub 0x19C610(pool, ride)        pool = manager+0x36BC; 3 = ride model loaded
+//   0     -> stub 0x19C618(pool, entry)       request it (entry = manager + ride*8 + 0x39E8)
+//   3     -> stub 0x19C618(pool, entry); stub 0x19C620(pool, inst, ride, mm, slot) attaches
+//            (DllField FUN_007352AC); stub 0x19C628(mm + 0x96C) refreshes the animation state.
+constexpr u32 FN_MODEL_INST = 0x004E3F90;
+constexpr u32 STUB_RIDE_STATUS = 0x0019C610, STUB_RIDE_REQUEST = 0x0019C618;
+constexpr u32 STUB_RIDE_ATTACH = 0x0019C620, STUB_RIDE_REFRESH = 0x0019C628;
+constexpr u32 MGR_RIDE_POOL = 0x36BC, MGR_RIDE_ENTRIES = 0x39E8;
+constexpr u32 INST_RIDE_USED = 0x1C0;
+constexpr u32 RIDE_MAX = 0x22;
+constexpr u32 FN_SET_FORM = 0x003F31EC;  // (mm, form): mm+0x59, animation remap set (bike = 2)
+constexpr u32 FN_SET_RIDE = 0x003F9C08;  // (mm, mode): mm+0xA2C (bike 2, surf 0, on foot 1)
+
+RideDebug g_rideDebug;
+
+int AttachRide(u32 mm, const Ride& rd) {
+    u32 ride = rd.model;
+    RideDebug& d = g_rideDebug;
+    d = RideDebug();
+    MoveModel m;
+    u32 manager = 0, pool = 0;
+    if (ride >= RIDE_MAX || !ReadSlot(mm, m) || !Process::Read32(mm + MM_MANAGER, manager) ||
+        manager < 0x08000000 || !Process::Read32(manager + MGR_RIDE_POOL, pool) || !pool)
+        return d.result = -1;
+    d.inst = reinterpret_cast<u32 (*)(u32)>(FN_MODEL_INST)(mm);
+    if (!d.inst) return d.result = 0; // just spawned: its model isn't built yet, retry
+    Process::Read8(d.inst + INST_RIDE_USED, d.used0);
+    Process::Read8(d.inst + INST_RIDE_USED + 1, d.used1);
+    u32 slot = !d.used0 ? 0 : !d.used1 ? 1 : 2;
+    if (slot > 1) return d.result = -3;
+    d.status = reinterpret_cast<u32 (*)(u32, u32)>(STUB_RIDE_STATUS)(pool, ride);
+    u32 entry = manager + ride * 8 + MGR_RIDE_ENTRIES;
+    if (d.status == 0) {
+        reinterpret_cast<void (*)(u32, u32)>(STUB_RIDE_REQUEST)(pool, entry);
+        return d.result = 0; // loading
+    }
+    if (d.status != 3) return d.result = 0; // still loading
+    reinterpret_cast<void (*)(u32, u32)>(STUB_RIDE_REQUEST)(pool, entry);
+    d.attached = reinterpret_cast<u32 (*)(u32, u32, u32, u32, u32)>(STUB_RIDE_ATTACH)(pool, d.inst, ride, mm, slot);
+    reinterpret_cast<void (*)(u32)>(STUB_RIDE_REFRESH)(mm + 0x96C);
+    if (!d.attached) return d.result = -4;
+    // Rest of the mount that applies to any character: animation set + ride mode.
+    reinterpret_cast<void (*)(u32, u32)>(FN_SET_FORM)(mm, rd.form);
+    reinterpret_cast<void (*)(u32, u32)>(FN_SET_RIDE)(mm, rd.mode);
+    return d.result = 1;
+}
+
 // FUN_003FB3A0(mm): releases the character's render/animation objects and frees the slot.
 // Used by the game's map-exit cleanup (FUN_003F5D98) and script commands.
 constexpr u32 FN_DESPAWN = 0x003FB3A0;
