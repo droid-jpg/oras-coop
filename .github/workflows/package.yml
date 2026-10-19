@@ -42,15 +42,21 @@ jobs:
       - name: Package
         run: |
           bash scripts/package.sh
-          echo "PKG=$(basename dist/*.zip .zip)" >> "$GITHUB_ENV"
+          echo "PKG=$(basename dist/*-windows.zip -windows.zip)" >> "$GITHUB_ENV"
+
+      # Uploaded as zips so the Mac .command files keep their executable bit.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}-windows
+          path: dist/${{ env.PKG }}-windows.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PKG }}
-          path: dist/${{ env.PKG }}/
+          name: ${{ env.PKG }}-mac
+          path: dist/${{ env.PKG }}-mac.zip
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ env.PKG }}.zip
+          files: dist/*.zip

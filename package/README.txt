@@ -27,8 +27,8 @@ Uninstall
 ---------
 Double-click "Uninstall oras-coop.bat".
 
-Manual install (portable Azahar, Linux, macOS)
-----------------------------------------------
+Manual install (portable Azahar, Linux)
+---------------------------------------
 Copy oras-coop.3gx into <Azahar user folder>/sdmc/luma/plugins/000400000011C500/
 and turn on Emulation > Configure > System > "Enable 3GX plugin loader".
 Settings go in oras-coop.txt in the same folder, for example:

@@ -7,7 +7,7 @@ Co-op mod for **Pokémon Alpha Sapphire v1.4** (Azahar emulator): see your frien
 - `server/` — Node relay server (no dependencies). `node server/server.mjs [port]`
 - `tools/fakefriend.mjs` — test client that joins a room and walks in a circle.
 - `scripts/` — WSL toolchain setup, build and packaging.
-- `package/` — Windows installer (`install.ps1` + double-click `.bat` files) shipped in the zip.
+- `package/` — installers shipped in the zips: Windows (`install.ps1` + `.bat`) and `mac/` (`install.sh` + `.command`).
 - `re/` — reverse-engineering notes (`NOTES.md`), Azahar GDB memory tools, Ghidra scripts.
 - `PROTOCOL.md` — wire format. `STATUS.md` — current state and how to pick the work back up.
 
@@ -15,10 +15,10 @@ No game code, assets or memory dumps are included; you need your own legally obt
 
 ## Install (players)
 
-Download `oras-coop-<version>.zip` from the repo's Releases page (or the latest **Package** workflow
-run under Actions), unzip it, close Azahar and double-click **Install oras-coop.bat**. It copies the
+Download `oras-coop-<version>-windows.zip` or `-mac.zip` from the repo's Releases page (or the latest **Package** workflow
+run under Actions), unzip it, close Azahar and double-click **Install oras-coop.bat** (Mac: **Install oras-coop.command**). It copies the
 plugin, asks for your name / server / room, and turns on Azahar's 3GX plugin loader. One player
-hosts with **Start server.bat** (Node.js 18+). Details in `package/README.txt`.
+hosts with **Start server** (Node.js 18+). Details in `package/README.txt` and `package/mac/README.txt`.
 
 ## Build
 
