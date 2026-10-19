@@ -28,10 +28,25 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Doors and map edges | ✅ a friend leaving your map leaves a fading "Name -> Place" note where they left; arriving shows "Name arrived" |
 | Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting) opens in a game-style text box, their trainer turns to you, and they get "Name is talking to you!". Drawn by the plugin, not the game's own window yet |
 
+## Known bugs (found playing over Tailscale, 2026-10-19)
+
+1. **Talking to a friend crashes the game of the player who pressed A.** The friend's game is fine.
+   Not investigated yet. Suspect (unverified): with Real models on, the game also sees the A
+   press on the spawned trainer and runs its own NPC-talk path on a puppet that has no valid
+   script/event id. Check by trying with Real models off (overlay only); if that doesn't crash, look at how the
+   puppet is spawned (`Puppet.cpp`, spawn id 0xF0) and either give it a harmless script or
+   swallow A while facing a friend (`Overlay.cpp` UpdateTalk / talk-target code).
+2. **Every friend shows as the same trainer (all Brendan or all May)** instead of their own
+   choice. Each player's model is sent in STATE (`model` u16 @38) and the map-loader hook loads
+   both (`Models.cpp`), so check where the puppet's model id is picked (`Puppet.cpp`): it may be
+   taking our own model / the first resident one instead of `Remote::model`, or spawning before
+   the friend's first STATE arrives and never respawning when `model` changes.
+
 ## Notes for the next session
 
 - Everything above is verified in Azahar with the fake friend (and a real running player for
-  the run clip), and with two Azahar windows on one PC. Not yet tried over the internet.
+  the run clip), and with two Azahar windows on one PC. Over the internet via Tailscale it
+  connects and syncs (2026-10-19), but see Known bugs above.
 - Details for every address/function are in `re/NOTES.md` (action table, anim byte mm+0x58,
   grid records, resident model table + list-loader hook, camera matrix, field-active flag).
 - The model hook only knows Brendan/May; other outfits/characters would need their ids added.
@@ -61,6 +76,10 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 ## Ideas queue
 
-- Try two real players over the internet (relay on a public host or Tailscale).
+- **Polish: animations during cutscenes.** While a friend is in a cutscene (busy), their trainer
+  stops animating and just slides around. Keep driving walk/run (or freeze position) instead.
+- **Spectate a friend's battle.** Pressing A on a friend who is in a battle opens a popup above
+  them with their Pokémon sprites, active Pokémon, HP, etc. Needs a new frame type carrying the
+  battle state, sent while `status` busy is from a battle.
 - Trading / battles between players (large: needs the game's link-trade/battle protocols).
 - Show friends on other maps' doors/warps (e.g. "Bot is inside"), and a /who list in chat.
