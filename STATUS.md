@@ -31,11 +31,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 ## Known bugs (found playing over Tailscale, 2026-10-19)
 
 1. ~~**Talking to a friend crashes the game of the player who pressed A.**~~ **Fixed.** It was a hang, not a crash: the game's NPC-talk event ran script id 0 (our trainers have no script), which never resolves to a file, so the script runner looped forever. `Talk.cpp` hooks the run-script call (`FUN_003DC114`) and runs our message script for friends' trainers instead. Tested: 10+ talks in a row from both sides, no hang.
-2. **Every friend shows as the same trainer (all Brendan or all May)** instead of their own
-   choice. Each player's model is sent in STATE (`model` u16 @38) and the map-loader hook loads
-   both (`Models.cpp`), so check where the puppet's model id is picked (`Puppet.cpp`): it may be
-   taking our own model / the first resident one instead of `Remote::model`, or spawning before
-   the friend's first STATE arrives and never respawning when `model` changes.
+2. ~~**Every friend shows as the same trainer**~~ **Fixed.** Friends' models are only loaded with a map, and the first map after Continue loaded before any friend's model was known, so they showed as your own trainer until a map change. Now both Brendan and May are loaded on every map while Real models is on (one extra model), and a friend spawned with a stand-in is swapped to their own trainer as soon as it's available. Tested with a fake Brendan friend next to two May players, straight after Continue.
 
 ## Notes for the next session
 
