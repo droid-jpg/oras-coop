@@ -20,7 +20,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Friend soaring / in a long cutscene | ✅ shown as "Name (busy)", standing at their takeoff spot; back to normal on landing |
 | Friend in a battle | ✅ wild battle on Route 110: friends see "Name (busy)"; your own overlay hides during battles, dialogs and prompts |
 | Friend surfing | ✅ their trainer sits on the surf Pokémon (the game's own surf mount); back to walking on land. Water marker only if the mount can't attach |
-| Friend's own trainer (Brendan vs May) | ✅ the map loader is hooked to load their model on every map change; a friend who joins mid-map shows as the rival model (Littleroot) or yours until the next map change |
+| Friend's own trainer (Brendan vs May) | ✅ both player models are loaded on every map (map-loader hook), so each friend shows as their own trainer from the first map on |
 | Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game) |
 | Towns and routes | ✅ (a wrong "field is live" check had stopped syncing on routes; fixed) |
 | Map names | ✅ player list shows where friends are ("Slateport City", "Route 109"), read from the game's own place-name text |

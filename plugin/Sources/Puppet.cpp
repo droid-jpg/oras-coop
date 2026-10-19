@@ -47,6 +47,7 @@ struct Spawned {
     u64 mountSince = 0;
     bool mounted = false;               // ride model attached
     bool mountFailed = false;           // couldn't attach: shown without it (runs on a bike)
+    u16 model = 0;                      // model it was spawned with
 };
 
 Spawned s_spawned[MAX_ID + 1];
@@ -110,19 +111,12 @@ void Despawn(int id, Spawned& s, u16 currentMap) {
 
 void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId, int talkingTo) {
     u64 now = osGetTime();
-    // Ask the map loader (Models.cpp) to load the trainer models our friends use, so they are
-    // there by the next map change, wherever we go.
-    // Kept as-is while our own model is unknown (loading), which is exactly when it's used.
-    if (me.model) {
-        bool may = false, brendan = false;
-        for (int id = 1; enabled && id <= MAX_ID; id++) {
-            const Remote& r = remotes[id];
-            if (id == myId || !r.active || r.model == me.model) continue;
-            may |= r.model == game::MODEL_MAY;
-            brendan |= r.model == game::MODEL_BRENDAN;
-        }
-        game::SetWantedModels(may, brendan);
-    }
+    // Have the map loader (Models.cpp) load both trainer models on every map while real models
+    // are on, whoever is online: only models loaded with the map can be shown, and the first map
+    // after Continue loads before any friend's model is known (that left friends shown as our own
+    // trainer for as long as we stayed on that map). Our own model is loaded anyway (and its slot is
+    // filled after the list, so the hook can't see it there): skip it once we know it.
+    game::SetWantedModels(enabled && me.model != game::MODEL_MAY, enabled && me.model != game::MODEL_BRENDAN);
     if (!me.valid || !me.inField) {
         // Title, intro, battle or loading: don't touch the field. Our characters are kept
         // track of; if the game deleted them meanwhile, the id check below notices.
@@ -150,6 +144,12 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
             if (s.active) Despawn(id, s, me.map);
             continue;
         }
+        // Spawned with a stand-in (their model wasn't loaded yet, or we didn't know it): swap to
+        // their own trainer as soon as this map has it.
+        if (s.active && game::IsPlayerModel(r.model) && s.model != r.model && game::IsModelResident(r.model)) {
+            Despawn(id, s, me.map);
+            continue;
+        }
         if (!s.active) {
             if (!settled) continue;
             u16 model = PickModel(r.model);
@@ -158,6 +158,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
             u32 mm = game::SpawnCharacter(CharId(id), model, tx, ty);
             if (!mm) continue; // no free slot on this map
             s.active = true;
+            s.model = model;
             s.mm = mm;
             s.map = me.map;
             s.lastX = r.dx;
