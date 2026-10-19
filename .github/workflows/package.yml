@@ -33,10 +33,14 @@ jobs:
           SigLevel = Optional
           CONF
           apt-get update && apt-get install -y --no-install-recommends zip
-          # pkg.devkitpro.org sometimes answers 403 to CI runners for a while: retry.
-          for i in 1 2 3 4 5; do
-            dkp-pacman -Sy --noconfirm && dkp-pacman -S --noconfirm --needed libctrpf 3gxtool && exit 0
-            echo "package download failed (attempt $i), retrying in 30 s"; sleep 30
+          # pkg.devkitpro.org sometimes answers 403 to CI runners for long stretches. The image
+          # already has devkitARM and libctru, so sync only the repos above (a copy of the config
+          # without the [dkp-*] sections); dependencies are checked against what's installed.
+          awk '/^\[/{skip = ($0 ~ /^\[dkp-/)} !skip' /opt/devkitpro/pacman/etc/pacman.conf > /tmp/tpx.conf
+          for i in 1 2 3; do
+            dkp-pacman --config /tmp/tpx.conf -Sy --noconfirm &&
+              dkp-pacman --config /tmp/tpx.conf -S --noconfirm --needed libctrpf 3gxtool && exit 0
+            echo "package download failed (attempt $i), retrying in 20 s"; sleep 20
           done
           exit 1
 
