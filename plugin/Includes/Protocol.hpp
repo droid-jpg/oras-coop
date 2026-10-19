@@ -1,0 +1,40 @@
+// Wire format shared with server/server.mjs. See PROTOCOL.md.
+#pragma once
+#include <3ds/types.h>
+#include <cstring>
+
+namespace coop {
+
+constexpr int FRAME = 48;
+constexpr u16 PROTO = 1;
+constexpr int MAX_ID = 8; // player IDs are 1..8
+
+enum : u8 {
+    T_HELLO = 1, T_WELCOME, T_STATE, T_CHAT, T_JOIN, T_LEAVE, T_ERROR, T_PING
+};
+
+struct Frame {
+    u8 b[FRAME];
+
+    explicit Frame(u8 type = 0) {
+        std::memset(b, 0, FRAME);
+        b[0] = type;
+        b[2] = PROTO & 0xFF;
+        b[3] = PROTO >> 8;
+    }
+    u8 type() const { return b[0]; }
+    u8 player() const { return b[1]; }
+
+    template <typename T> T get(int off) const { T v; std::memcpy(&v, b + off, sizeof v); return v; }
+    template <typename T> void put(int off, T v) { std::memcpy(b + off, &v, sizeof v); }
+
+    void putStr(int off, int len, const char* s) {
+        std::strncpy(reinterpret_cast<char*>(b + off), s, len - 1);
+    }
+    void getStr(int off, int len, char* out) const {
+        std::memcpy(out, b + off, len - 1);
+        out[len - 1] = 0;
+    }
+};
+
+} // namespace coop

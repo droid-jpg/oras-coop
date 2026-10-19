@@ -1,0 +1,23 @@
+Author: oras-coop
+
+Version: # Plugin version
+    Major: 0
+    Minor: 1
+    Revision: 0
+
+Targets: # Low TitleId of games which are compatibles with this plugin (0 for all)
+    - 0x0011C500 # Pokemon Alpha Sapphire
+
+Title: oras-coop
+
+Summary: See your friends in Hoenn (Alpha Sapphire 1.4)
+
+Description: |
+  Shows other players' positions on your map in Pokemon Alpha Sapphire 1.4.
+  Read-only: never writes to game memory.
+
+Compatibility: Any
+
+MemorySize: 5MiB
+
+UsePrivateMemory: false

@@ -1,0 +1,289 @@
+// Network thread: sends our state to the relay server and applies frames from others.
+#include <3ds.h>
+#include <3ds/services/soc.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <malloc.h>
+#include <cmath>
+#include "Session.hpp"
+#include "Game.hpp"
+
+using namespace CTRPluginFramework;
+
+namespace coop {
+
+Session g_session;
+
+namespace {
+
+constexpr u32 SOC_SIZE = 0x20000;
+constexpr u64 STATE_INTERVAL_MS = 66;   // ~15/s while moving
+constexpr u64 IDLE_INTERVAL_MS = 1000;  // keep-alive while idle
+constexpr u64 LOOP_SLEEP_NS = 33ULL * 1000 * 1000;
+constexpr u64 RETRY_DELAY_MS = 3000;
+
+struct Guard {
+    Mutex& m;
+    explicit Guard(Mutex& mm) : m(mm) { m.Lock(); }
+    ~Guard() { m.Unlock(); }
+};
+
+void SetStatus(NetStatus s, const std::string& text) {
+    Guard g(g_session.lock);
+    g_session.status = s;
+    g_session.statusText = text;
+}
+
+void SleepMs(u64 ms) { svcSleepThread((s64)ms * 1000 * 1000); }
+
+bool SocStart() {
+    // Azahar/Citra emulate SOC:U and accept a null buffer; real hardware needs memory.
+    if (R_SUCCEEDED(socInit((u32*)0, SOC_SIZE))) return true;
+    u32* buf = (u32*)memalign(0x1000, SOC_SIZE);
+    if (buf && R_SUCCEEDED(socInit(buf, SOC_SIZE))) return true;
+    free(buf);
+    return false;
+}
+
+class Conn {
+public:
+    ~Conn() { Close(); }
+
+    bool Open(const std::string& host, u16 port, std::string& err) {
+        fd_ = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd_ < 0) { err = "socket() failed"; return false; }
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = inet_addr(host.c_str());
+        if (connect(fd_, (sockaddr*)&addr, sizeof addr) < 0) {
+            err = "can't reach " + host + ":" + std::to_string(port);
+            Close();
+            return false;
+        }
+        fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL, 0) | O_NONBLOCK);
+        rxLen_ = 0;
+        return true;
+    }
+
+    void Close() {
+        if (fd_ >= 0) closesocket(fd_);
+        fd_ = -1;
+    }
+
+    bool Send(const Frame& f) {
+        int sent = 0;
+        int spins = 0;
+        while (sent < FRAME) {
+            int r = send(fd_, f.b + sent, FRAME - sent, 0);
+            if (r > 0) { sent += r; continue; }
+            if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && ++spins < 50) { SleepMs(2); continue; }
+            return false;
+        }
+        return true;
+    }
+
+    // Returns 1 with a full frame, 0 if none yet, -1 if the connection dropped.
+    int Poll(Frame& out) {
+        if (rxLen_ < FRAME) {
+            int r = recv(fd_, rx_ + rxLen_, sizeof rx_ - rxLen_, 0);
+            if (r == 0) return -1;
+            if (r < 0) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+            } else {
+                rxLen_ += r;
+            }
+        }
+        if (rxLen_ < FRAME) return 0;
+        std::memcpy(out.b, rx_, FRAME);
+        rxLen_ -= FRAME;
+        std::memmove(rx_, rx_ + FRAME, rxLen_);
+        return 1;
+    }
+
+private:
+    int fd_ = -1;
+    u8 rx_[FRAME * 16];
+    int rxLen_ = 0;
+};
+
+void ClearRemotes() {
+    Guard g(g_session.lock);
+    for (auto& r : g_session.remotes) r = Remote();
+    g_session.myId = 0;
+}
+
+void Apply(const Frame& f) {
+    u8 id = f.player();
+    Guard g(g_session.lock);
+    switch (f.type()) {
+    case T_WELCOME:
+        g_session.myId = id;
+        g_session.status = NetStatus::Connected;
+        g_session.statusText = "Connected as #" + std::to_string(id);
+        break;
+    case T_JOIN:
+        if (id >= 1 && id <= MAX_ID && id != g_session.myId) {
+            Remote& r = g_session.remotes[id];
+            r = Remote();
+            r.active = true;
+            f.getStr(4, 16, r.name);
+            g_session.lastChat = std::string(r.name) + " joined";
+            g_session.lastChatTime = osGetTime();
+        }
+        break;
+    case T_LEAVE:
+        if (id >= 1 && id <= MAX_ID) {
+            Remote& r = g_session.remotes[id];
+            if (r.active) {
+                g_session.lastChat = std::string(r.name) + " left";
+                g_session.lastChatTime = osGetTime();
+            }
+            r = Remote();
+        }
+        break;
+    case T_STATE:
+        if (id >= 1 && id <= MAX_ID) {
+            Remote& r = g_session.remotes[id];
+            r.active = true;
+            bool mapChanged = !r.hasState || r.map != f.get<u16>(4);
+            r.map = f.get<u16>(4);
+            r.facing = f.get<u16>(6);
+            r.tx = f.get<float>(8);
+            r.tz = f.get<float>(12);
+            r.ty = f.get<float>(16);
+            r.dirX = f.get<float>(28);
+            r.dirY = f.get<float>(32);
+            if (!std::isfinite(r.dirX) || !std::isfinite(r.dirY)) r.dirX = r.dirY = 0;
+            if (mapChanged) { r.dx = r.tx; r.dz = r.tz; r.dy = r.ty; }
+            r.hasState = true;
+            r.lastUpdate = osGetTime();
+        }
+        break;
+    case T_CHAT:
+        if (id >= 1 && id <= MAX_ID) {
+            char text[40];
+            f.getStr(4, 40, text);
+            g_session.lastChat = std::string(g_session.remotes[id].name) + ": " + text;
+            g_session.lastChatTime = osGetTime();
+        }
+        break;
+    case T_ERROR: {
+        u8 code = f.get<u8>(4);
+        g_session.status = NetStatus::Failed;
+        g_session.statusText = code == 1 ? "Room is full" : code == 3 ? "Server version mismatch" : "Server rejected hello";
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+Frame MakeState(const game::PlayerState& s, u32 seq) {
+    Frame f(T_STATE);
+    f.put<u16>(4, s.map);
+    f.put<u16>(6, s.facing);
+    f.put<float>(8, s.x);
+    f.put<float>(12, s.z);
+    f.put<float>(16, s.y);
+    f.put<u32>(20, s.aux);
+    f.put<u32>(24, seq);
+    f.put<float>(28, s.dirX);
+    f.put<float>(32, s.dirY);
+    return f;
+}
+
+bool Changed(const game::PlayerState& a, const game::PlayerState& b) {
+    return a.map != b.map || a.facing != b.facing ||
+           std::fabs(a.dirX - b.dirX) > 0.02f || std::fabs(a.dirY - b.dirY) > 0.02f ||
+           std::fabs(a.x - b.x) > 0.05f || std::fabs(a.y - b.y) > 0.05f || std::fabs(a.z - b.z) > 0.05f;
+}
+
+void RunSession(const Config& cfg) {
+    Conn conn;
+    std::string err;
+    SetStatus(NetStatus::Connecting, "Connecting to " + cfg.server + "...");
+    if (!conn.Open(cfg.server, cfg.port, err)) {
+        SetStatus(NetStatus::Failed, err);
+        return;
+    }
+
+    Frame hello(T_HELLO);
+    hello.putStr(4, 12, cfg.room.c_str());
+    hello.putStr(16, 16, cfg.name.c_str());
+    if (!conn.Send(hello)) { SetStatus(NetStatus::Failed, "Send failed"); return; }
+
+    game::PlayerState last;
+    u64 lastSend = 0;
+    u32 seq = 0;
+
+    while (g_session.running) {
+        std::string chat;
+        {
+            Guard g(g_session.lock);
+            if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
+            chat.swap(g_session.pendingChat);
+        }
+
+        u64 now = osGetTime();
+        if (game::Locate()) {
+            game::PlayerState s = game::Read();
+            u64 since = now - lastSend;
+            if (s.valid && ((Changed(s, last) && since >= STATE_INTERVAL_MS) || since >= IDLE_INTERVAL_MS)) {
+                if (!conn.Send(MakeState(s, ++seq))) break;
+                last = s;
+                lastSend = now;
+            }
+        } else if (now - lastSend >= IDLE_INTERVAL_MS) {
+            if (!conn.Send(Frame(T_PING))) break;
+            lastSend = now;
+        }
+
+        if (!chat.empty()) {
+            Frame c(T_CHAT);
+            c.putStr(4, 40, chat.c_str());
+            if (!conn.Send(c)) break;
+        }
+
+        Frame in;
+        int r;
+        while ((r = conn.Poll(in)) == 1) Apply(in);
+        if (r < 0) break;
+
+        svcSleepThread(LOOP_SLEEP_NS);
+    }
+    SetStatus(NetStatus::Failed, "Disconnected");
+}
+
+} // namespace
+
+void NetThread(void*) {
+    if (!SocStart()) {
+        SetStatus(NetStatus::Failed, "Network init failed");
+        return;
+    }
+    while (g_session.running) {
+        Config cfg;
+        {
+            Guard g(g_session.lock);
+            cfg = g_session.cfg;
+            g_session.reconnect = false;
+        }
+        RunSession(cfg);
+        ClearRemotes();
+        for (u64 waited = 0; waited < RETRY_DELAY_MS && g_session.running; waited += 100) {
+            {
+                Guard g(g_session.lock);
+                if (g_session.reconnect) break;
+            }
+            SleepMs(100);
+        }
+    }
+    socExit();
+}
+
+} // namespace coop

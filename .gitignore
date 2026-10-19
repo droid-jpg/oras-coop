@@ -1,0 +1,20 @@
+# Build output
+plugin/Build/
+*.elf
+*.3gx
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# Never commit game data or dumps (Nintendo's code/assets, memory dumps, Ghidra databases)
+*.bin
+*.cci
+*.cia
+*.3ds
+*.cxi
+*.gpr
+*.rep/
+re/dumps/
