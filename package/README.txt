@@ -1,0 +1,39 @@
+oras-coop - see your friends in Hoenn
+=====================================
+
+Co-op mod for Pokemon Alpha Sapphire v1.4 on the Azahar emulator (Windows).
+You need your own copy of the game, updated to v1.4.
+
+Install
+-------
+1. Close Azahar.
+2. Double-click "Install oras-coop.bat" and answer the questions
+   (your name, the server address, a room code).
+3. Start Alpha Sapphire in Azahar. Press SELECT in game for the oras-coop menu.
+
+The installer copies the plugin to
+  %APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\
+saves your settings next to it (oras-coop.txt), and turns on Azahar's
+3GX plugin loader (Emulation > Configure > System). A backup of Azahar's
+settings is kept as qt-config.ini.bak-oras-coop.
+
+Hosting
+-------
+One player runs "Start server.bat" (needs Node.js 18+ from https://nodejs.org).
+It prints the addresses friends should enter. Over the internet, forward TCP
+port 7777 on the host's router, or use a VPN such as Tailscale.
+
+Uninstall
+---------
+Double-click "Uninstall oras-coop.bat".
+
+Manual install (portable Azahar, Linux, macOS)
+----------------------------------------------
+Copy oras-coop.3gx into <Azahar user folder>/sdmc/luma/plugins/000400000011C500/
+and turn on Emulation > Configure > System > "Enable 3GX plugin loader".
+Settings go in oras-coop.txt in the same folder, for example:
+  server=192.168.1.20
+  port=7777
+  room=HOENN
+  name=Sami
+  puppets=1
