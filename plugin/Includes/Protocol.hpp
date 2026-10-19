@@ -23,6 +23,7 @@ enum : u8 {
     TRADE_OFFER = 1,   // chunk of the offered Pokemon (game::PK_SIZE bytes in TRADE_CHUNK pieces)
     TRADE_ACCEPT = 2,  // agree to swap; data @8 = u32 hash of both offers
     TRADE_CANCEL = 3,
+    TRADE_COMMIT = 4,  // from the server, to both players: both accepted the same pair (hash @8); swap now
 };
 constexpr int TRADE_CHUNK = 40;
 

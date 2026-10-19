@@ -405,3 +405,23 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
   every run seen). Slot object (vtable 0x005DE89C): +4 → encrypted PK6 data (0xE8), +8 → encrypted
   party stats (0x1C; level at +4, HP at +8/+0xA after decryption with the data's EC). Writing both
   blocks from another game's Pokemon shows up in the game's party screen straight away (tested).
+
+### Script dialogs: Yes/No, choice lists, party screen (2026-10-19)
+
+- DllField's native table (0x7EA58C, 332 {name*, func}) has the names; disassembler for game
+  scripts: `ORAS-RE/tools/amx/disasm.mjs <script.bin> <natives.txt>` (packed ops P188 = PUSH.C imm,
+  P190 = PUSH.S, P164 = LOAD.S.pri, P177 = STOR.S.pri; operand in the high 16 bits).
+- **Pages**: the game chains messages in one open window: TalkMdlMsg_Seq, CheckWinAllSuspend loop,
+  then SetKeyWaitMark / _ABKeyWait / VanishKeyWaitMark. Closing (MsgWinCloseNo) and immediately
+  opening another message ends the script. A long line pages by itself (red arrow).
+- **YesNoWin_Seq(0,0,0,0)** returns 0 until answered; the answer is in work 0x8010, read with
+  native hash 0x8E50F765 (GetWork; its name isn't in DllField's table). Yes = non-zero.
+- **ListMenuInit_Seq(x, y, ?, cancel, ?, ?)** (poll until non-zero), **ListMenuAdd(line, value, 0)**
+  per item (the text comes through GetString for `line`), **ListMenuStart_Seq()** (poll); choice in
+  work 0x8010, B = 0xFFFF (only with the 4th init argument = 1). y > 0 moves the list up; 20 px per
+  item keeps it clear of the text box (tuned live by poking the arguments through GDB).
+- **CallPokeSelect(mode 0..5, result work, filter, flag)** (0x746BDC): mode 0 opens the normal
+  party menu (Summary / Use a move...), and returning from it straight into our script left the
+  field faded to black (soft lock; real scripts fade around it). Not used.
+- The party screen and bag run as their own CRO in the shared slot (name 0x00706000 seen), so
+  "DllField loaded" doubles as "on the plain field".

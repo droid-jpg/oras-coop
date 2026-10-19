@@ -1,10 +1,20 @@
-// Shows text in the game's own field text box (the one NPCs talk in). The game runs all field
-// dialogue as AMX (Pawn) scripts; we hand it a tiny script of our own:
+// Dialogs in the game's own field text box (the one NPCs talk in). The game runs all field
+// dialogue as AMX (Pawn) scripts; we hand it a small script of our own, built per dialog:
 //
-//   TalkMdlMsg_Seq(MAGIC_LINE, ...)            open the text box (native 0x747308)
-//   while (!CheckWinAllSuspend()) wait 1 frame wait until the text has printed
-//   LastKeyWait()                              wait for A/B, like any NPC line
-//   MsgWinCloseNo(0)                           close it
+//   [intro]     TalkMdlMsg_Seq(LINE_INTRO), wait until printed, A/B with the "more" arrow
+//   text        TalkMdlMsg_Seq(LINE_TEXT), wait until printed
+//   Message:    LastKeyWait(), close
+//   YesNo:      YesNoWin_Seq(0,0,0,0) until answered; answer = GetWork(0x8010)
+//               TalkMdlMsg_Seq(LINE_ANSWER + answer), wait, LastKeyWait(), close
+//   YesNoPick:  as YesNo; on Yes: TalkMdlMsg_Seq(LINE_PICK), then the game's choice list
+//               (ListMenuInit_Seq, ListMenuAdd(LINE_ITEM + i, i, 0) per item, ListMenuStart_Seq;
+//               choice in 0x8010, 0xFFFF = B), TalkMdlMsg_Seq(LINE_SLOT + choice), wait, LastKeyWait()
+//               (The game's party screen, CallPokeSelect, leaves the field faded out when called like
+//               this: it needs the fade handling real scripts do around it.)
+//
+// The answers come back to us through the text: the box asks GetString for line LINE_ANSWER+n or
+// LINE_SLOT+n, and our GetString passes n to the result callback, which acts on it and writes
+// the line to show ("You offered ...").
 //
 // How it's started (see ORAS-RE/NOTES.md, "Field scripts"):
 //   FUN_003DC114(field, scriptId, 0...) is the game's "run script <id>" event. The id is turned
@@ -14,7 +24,7 @@
 //   game heap: the game frees the slot's buffer itself once the script is loaded).
 //   The box's text comes from GetString FUN_00139A34(msg, line, strbuf), which the native calls
 //   through DllField's import stub at 0x006F32B8 (ldr pc,[pc,#-4]; .word target). We point that
-//   stub at our function, which fills in our text for MAGIC_LINE (a line no message file has) and
+//   stub at our function, which fills in our text for our lines (lines no message file has) and
 //   plain-calls the original for everything else. (A CTRPF MITM hook on GetString itself crashed:
 //   worker threads call it too, and the hook context isn't there for them.)
 #include <3ds.h>
@@ -49,72 +59,185 @@ constexpr u32 OUR_ID = 32700;                // script id no range uses
 constexpr u32 TEMPLATE_ID = 10050;           // Surf-check script: file 0x2E, message file 254, natives 0x643
 constexpr u16 OUR_FILE = 0x3F0;              // container file id (the archive has ~0x56 files)
 constexpr u32 REQ_FILE = 0x16;               // u16 file id in the resolved request
-constexpr u32 MAGIC_LINE = 0x7FF0;
 
-// Native name hashes: h = c ^ (h * 0x83) over the name (FUN_00505B04).
-constexpr u32 H_TALK_MSG = 0x9ADF1616;       // TalkMdlMsg_Seq
-constexpr u32 H_WIN_READY = 0xC8E7FB61;      // CheckWinAllSuspend
-constexpr u32 H_SUSPEND = 0x0B13A389;        // _Suspend (frames)
-constexpr u32 H_KEY_WAIT = 0x358B0372;       // LastKeyWait
-constexpr u32 H_CLOSE = 0xF01EEEE0;          // MsgWinCloseNo
+// Our text lines (no message file has this many lines).
+constexpr u32 LINE_INTRO = 0x7FF0, LINE_TEXT = 0x7FF1, LINE_PICK = 0x7FF2;
+constexpr u32 LINE_ITEM = 0x7FE0;                        // + item index
+constexpr int MAX_ITEMS = DIALOG_ITEMS;
+constexpr u32 LINE_ANSWER = 0x7D00, LINE_SLOT = 0x7E00; // + value & 0xFF
 
-// Opcodes of the game's Pawn VM (jump table *(0x0050468C), verifier FUN_001D3630).
-constexpr u32 OP_PUSH_C = 0x27, OP_PROC = 0x2E, OP_RETN = 0x30, OP_JUMP = 0x33, OP_JZER = 0x35;
+// Game work variables the natives answer in (the Surf script reads 0x8010 after YesNoWin_Seq).
+// ListMenuStart_Seq stores the choice there too (literal 0x0074A4CC; B = 0xFFFF).
+constexpr u32 WORK_ANSWER = 0x8010;
+
+// Native name hashes: h = c ^ (h * 0x83) over the name (FUN_00505B04). GetWork's name isn't in
+// DllField's table; the Surf script calls it with 0x8010 right after YesNoWin_Seq.
+enum Native : u32 { N_TALK_MSG, N_WIN_READY, N_SUSPEND, N_KEY_WAIT, N_CLOSE, N_YESNO, N_GET_WORK,
+                   N_MARK, N_AB_WAIT, N_UNMARK, N_LIST_INIT, N_LIST_ADD, N_LIST_START, NATIVES };
+constexpr u32 NATIVE_HASH[NATIVES] = {
+    0x9ADF1616, // TalkMdlMsg_Seq
+    0xC8E7FB61, // CheckWinAllSuspend
+    0x0B13A389, // _Suspend (frames)
+    0x358B0372, // LastKeyWait
+    0xF01EEEE0, // MsgWinCloseNo
+    0x0511B06E, // YesNoWin_Seq: 0 until answered
+    0x8E50F765, // GetWork(id)
+    0xD04413AD, // SetKeyWaitMark: the "more" arrow
+    0xC7DE8C7C, // _ABKeyWait
+    0x4016ED32, // VanishKeyWaitMark
+    0x75321BA3, // ListMenuInit_Seq(x, y, ?, B cancels, ?, ?) (DllField 0x748BB8)
+    0x7903FD3E, // ListMenuAdd(line, value, other message file?) (0x744F34)
+    0x5CB69D67, // ListMenuStart_Seq(): 0 until chosen (0x74A388)
+};
+
+// Opcodes of the game's Pawn VM (standard Pawn numbering; jump table *(0x0050468C), verifier
+// FUN_001D3630). Jumps are relative to the jump opcode's own address.
+constexpr u32 OP_CONST_ALT = 0x0C, OP_PUSH_PRI = 0x24, OP_PUSH_C = 0x27, OP_PROC = 0x2E, OP_RETN = 0x30;
+constexpr u32 OP_JUMP = 0x33, OP_JZER = 0x35, OP_AND = 0x51, OP_ADD_C = 0x57;
 constexpr u32 OP_ZERO_PRI = 0x59, OP_ZERO_ALT = 0x5A, OP_HALT = 0x78, OP_SYSREQ_N = 0x87, OP_HALT_P = 0xD2;
 constexpr u32 AMX_SLEEP = 12;                // HALT code: resume here next frame
 
-constexpr u32 HDR = 0x3C, NATIVES = 5;
+constexpr u32 HDR = 0x3C;
 constexpr u32 STACK_HEAP = 0x800;
 
-constexpr u32 MAX_CODE = 128;          // cells; the script is ~75
-u32 s_image[0x100];
+constexpr u32 MAX_CODE = 480;
+u32 s_image[0x300];
 u32 s_imageSize = 0;     // bytes (= hea)
 u32 s_stp = 0;
 
-u16 s_text[96];
-int s_textLen = 0;
+// Texts of the running dialog (UTF-16), and the reply the result callback wrote last.
+struct Utf16 { u16 c[128]; int len = 0; };
+Utf16 s_intro, s_text, s_pick, s_reply;
+Utf16 s_items[MAX_ITEMS];
+int s_itemCount = 0;
+u32 s_replyLine = 0;     // line s_reply answers (GetString may ask for a line more than once)
+DialogResultFn s_resultFn = nullptr;
 volatile bool s_resolving = false;
 Hook s_resolveHook;
 
-void Build() {
+// ASCII -> UTF-16, broken into lines of at most 32 characters at spaces (0x0A = new line).
+void ToUtf16(const char* text, Utf16& out) {
+    out.len = 0;
+    int lineStart = 0, lastSpace = -1;
+    const int max = (int)(sizeof out.c / 2) - 1;
+    for (const char* p = text; *p && out.len < max; p++) {
+        u16 c = (u8)*p;
+        if (c == '\n') { out.c[out.len++] = 0x0A; lineStart = out.len; lastSpace = -1; continue; }
+        if (c == ' ') lastSpace = out.len;
+        out.c[out.len++] = c;
+        if (out.len - lineStart > 32 && lastSpace > lineStart) {
+            out.c[lastSpace] = 0x0A;
+            lineStart = lastSpace + 1;
+        }
+    }
+}
+
+// A tiny assembler with forward jumps patched in place.
+struct Asm {
     u32 code[MAX_CODE];
     u32 n = 0;
-    auto op = [&](u32 v) { if (n < MAX_CODE) code[n] = v; n++; };
-    auto sysreq = [&](u32 idx, u32 bytes) { op(OP_SYSREQ_N); op(idx); op(bytes); };
-    op(OP_HALT_P);                     // 0x00: main returns here
-    op(OP_PROC);                       // 0x04: main
+    void op(u32 v) { if (n < MAX_CODE) code[n] = v; n++; }
+    u32 here() const { return n * 4; }
+    u32 jump(u32 opcode) { u32 at = here(); op(opcode); op(0); return at; }   // returns the patch site
+    void land(u32 site) { land(site, here()); }
+    void land(u32 site, u32 target) { if (site / 4 + 1 < MAX_CODE) code[site / 4 + 1] = target - site; }
+    void sysreq(Native idx, u32 args) { op(OP_SYSREQ_N); op(idx); op(args * 4); }
     // TalkMdlMsg_Seq: the 19 arguments the Surf-check script passes (line, 0, -1, 0xB, 0, 0xAA,
-    // ten zeros, -1, 0, 0), pushed last to first.
-    const s32 args[19] = { (s32)MAGIC_LINE, 0, -1, 0xB, 0, 0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0, 0 };
-    for (int i = 18; i >= 0; i--) { op(OP_PUSH_C); op((u32)args[i]); }
-    sysreq(0, 19 * 4);
-    u32 loop = n * 4;
-    sysreq(1, 0);                      // pri = CheckWinAllSuspend()
-    u32 jz = n * 4; op(OP_JZER); op(0); // not ready yet -> wait a frame
-    u32 jdone = n * 4; op(OP_JUMP); op(0);
-    u32 wait = n * 4;
-    op(OP_PUSH_C); op(1); sysreq(2, 4); // _Suspend(1) only arms the timer...
-    op(OP_ZERO_PRI); op(OP_ZERO_ALT); op(OP_HALT); op(AMX_SLEEP); // ...HALT 12 yields the frame (as the game's scripts do)
-    u32 jback = n * 4; op(OP_JUMP); op(0);
-    u32 done = n * 4;
-    sysreq(3, 0);                      // LastKeyWait()
-    op(OP_PUSH_C); op(0); sysreq(4, 4); // MsgWinCloseNo(0)
-    op(OP_ZERO_PRI);
-    op(OP_RETN);
-    s_imageSize = 0;
-    if (n > MAX_CODE) return; // can't happen; ShowGameMessage refuses then
-    // Jumps are relative to the jump opcode's own address.
-    code[jz / 4 + 1] = wait - jz;
-    code[jdone / 4 + 1] = done - jdone;
-    code[jback / 4 + 1] = (u32)((s32)loop - (s32)jback);
+    // ten zeros, -1, 0, 0), pushed last to first; the line is a constant or pri.
+    void message(bool linePri, u32 line = 0) {
+        static const s32 args[19] = { 0, 0, -1, 0xB, 0, 0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0, 0 };
+        for (int i = 18; i >= 1; i--) { op(OP_PUSH_C); op((u32)args[i]); }
+        if (linePri) op(OP_PUSH_PRI);
+        else { op(OP_PUSH_C); op(line); }
+        sysreq(N_TALK_MSG, 19);
+    }
+    // Yields one frame: _Suspend(1) only arms the timer, HALT 12 yields (as the game's scripts do).
+    void waitFrame() {
+        op(OP_PUSH_C); op(1); sysreq(N_SUSPEND, 1);
+        op(OP_ZERO_PRI); op(OP_ZERO_ALT); op(OP_HALT); op(AMX_SLEEP);
+    }
+    // Calls `native` (with `args` already arranged by `push`) every frame until it returns non-zero.
+    template <typename Push> void until(Native native, u32 args, Push push) {
+        u32 loop = here();
+        push();
+        sysreq(native, args);
+        u32 jz = jump(OP_JZER);
+        u32 done = jump(OP_JUMP);
+        land(jz);
+        waitFrame();
+        u32 back = jump(OP_JUMP);
+        land(back, loop);
+        land(done);
+    }
+    void waitPrinted() { until(N_WIN_READY, 0, [] {}); }
+    void keyWait() { sysreq(N_KEY_WAIT, 0); }
+    // Next page in the same window, as the game does it (closing and reopening at once stops the script).
+    void pageWait() { sysreq(N_MARK, 0); sysreq(N_AB_WAIT, 0); sysreq(N_UNMARK, 0); }
+    void close() { op(OP_PUSH_C); op(0); sysreq(N_CLOSE, 1); }
+    void getWork(u32 id) { op(OP_PUSH_C); op(id); sysreq(N_GET_WORK, 1); }
+    void priToLine(u32 base) { op(OP_CONST_ALT); op(0xFF); op(OP_AND); op(OP_ADD_C); op(base); }
+};
 
-    const u32 natives[NATIVES] = { H_TALK_MSG, H_WIN_READY, H_SUSPEND, H_KEY_WAIT, H_CLOSE };
+bool Build(const Dialog& d) {
+    s_imageSize = 0;
+    Asm a;
+    a.op(OP_HALT_P);                   // 0x00: main returns here
+    a.op(OP_PROC);                     // 0x04: main
+    if (d.intro[0]) {
+        a.message(false, LINE_INTRO);
+        a.waitPrinted();
+        a.pageWait();
+    }
+    a.message(false, LINE_TEXT);
+    a.waitPrinted();
+    if (d.kind != DialogKind::Message) {
+        a.until(N_YESNO, 4, [&] { for (int i = 0; i < 4; i++) { a.op(OP_PUSH_C); a.op(0); } });
+        a.getWork(WORK_ANSWER);
+        u32 toAnswer = 0;
+        if (d.kind == DialogKind::YesNoPick) {
+            // Yes (non-zero, as the Surf script reads it): the choice list, then report the choice.
+            toAnswer = a.jump(OP_JZER);
+            a.message(false, LINE_PICK);
+            a.waitPrinted();
+            // ListMenuInit_Seq(x, y, ?, B cancels, ?, ?). y moves the list up (tuned live: 20 px per
+            // entry keeps it clear of the text box).
+            a.until(N_LIST_INIT, 6, [&] {
+                const s32 init[6] = { 0, 0, 1, 0, 20 * d.itemCount, 0 }; // pushed last to first
+                for (s32 v : init) { a.op(OP_PUSH_C); a.op((u32)v); }
+            });
+            for (int i = 0; i < d.itemCount; i++) {
+                const u32 add[3] = { 0, (u32)i, LINE_ITEM + i }; // pushed last to first
+                for (u32 v : add) { a.op(OP_PUSH_C); a.op(v); }
+                a.sysreq(N_LIST_ADD, 3);
+            }
+            a.until(N_LIST_START, 0, [] {});
+            a.getWork(WORK_ANSWER);
+            a.priToLine(LINE_SLOT);
+            a.message(true);
+            u32 toEnd = a.jump(OP_JUMP);
+            a.land(toAnswer);
+            a.priToLine(LINE_ANSWER);  // No: report the answer
+            a.message(true);
+            a.land(toEnd);
+        } else {
+            a.priToLine(LINE_ANSWER);
+            a.message(true);
+        }
+        a.waitPrinted();
+    }
+    a.keyWait();
+    a.close();
+    a.op(OP_ZERO_PRI);
+    a.op(OP_RETN);
+    if (a.n > MAX_CODE) return false;
+
+    const u32 n = a.n;
     u32 nameTable = HDR + NATIVES * 8;     // u16 max name length (< 0x40 required)
     u32 cod = nameTable + 4;
     u32 dat = cod + n * 4;
     u32 hea = dat + 0x10;
     s_stp = hea + STACK_HEAP;
-    if (hea > sizeof s_image) return;
+    if (hea > sizeof s_image) return false;
 
     u8* b = reinterpret_cast<u8*>(s_image);
     std::memset(b, 0, sizeof s_image);
@@ -138,10 +261,11 @@ void Build() {
     w32(0x30, nameTable);           // tags (none)
     w32(0x34, nameTable);           // name table
     w32(0x38, nameTable);           // overlays (none)
-    for (u32 i = 0; i < NATIVES; i++) { w32(HDR + i * 8, 0); w32(HDR + i * 8 + 4, natives[i]); }
+    for (u32 i = 0; i < NATIVES; i++) { w32(HDR + i * 8, 0); w32(HDR + i * 8 + 4, NATIVE_HASH[i]); }
     w16(nameTable, 0x1F);
-    std::memcpy(b + cod, code, n * 4);
+    std::memcpy(b + cod, a.code, n * 4);
     s_imageSize = hea;
+    return true;
 }
 
 void ResolveHook(u32 req, u32 zone, u32 id, u32 x) {
@@ -155,14 +279,33 @@ void ResolveHook(u32 req, u32 zone, u32 id, u32 x) {
 
 u32 GetString(u32 msg, u32 line, u32 strbuf, u32 x) {
     using Fn = u32 (*)(u32, u32, u32, u32);
-    if (line != MAGIC_LINE || !strbuf) return reinterpret_cast<Fn>(FN_GET_STRING)(msg, line, strbuf, x);
+    const Utf16* t = nullptr;
+    if (line == LINE_INTRO) t = &s_intro;
+    else if (line == LINE_TEXT) t = &s_text;
+    else if (line == LINE_PICK) t = &s_pick;
+    else if (line >= LINE_ITEM && line < LINE_ITEM + MAX_ITEMS && (int)(line - LINE_ITEM) < s_itemCount) t = &s_items[line - LINE_ITEM];
+    else if (line >= LINE_ANSWER && line < LINE_SLOT + 0x100) {
+        if (line != s_replyLine) {
+            // First time this answer is shown: act on it (once) and get the line to show.
+            char reply[128] = "...";
+            if (s_resultFn) {
+                bool slot = line >= LINE_SLOT;
+                s_resultFn(slot ? DialogResult::Slot : DialogResult::Answer, (int)(line - (slot ? LINE_SLOT : LINE_ANSWER)),
+                           reply, sizeof reply);
+            }
+            ToUtf16(reply, s_reply);
+            s_replyLine = line;
+        }
+        t = &s_reply;
+    }
+    if (!t || !strbuf) return reinterpret_cast<Fn>(FN_GET_STRING)(msg, line, strbuf, x);
     // StrBuf: +4 u16 buffer, +8 u16 capacity, +0xA u16 length, +0xC u8 valid.
     volatile u8* valid = reinterpret_cast<volatile u8*>(strbuf + 0xC);
     u16* buf = *reinterpret_cast<u16**>(strbuf + 4);
     u16 cap = *reinterpret_cast<volatile u16*>(strbuf + 8);
     if (!*valid || !buf || cap < 2) return 0;
-    int n = s_textLen < cap - 1 ? s_textLen : cap - 1;
-    for (int i = 0; i < n; i++) buf[i] = s_text[i];
+    int n = t->len < cap - 1 ? t->len : cap - 1;
+    for (int i = 0; i < n; i++) buf[i] = t->c[i];
     buf[n] = 0;
     *reinterpret_cast<volatile u16*>(strbuf + 0xA) = (u16)n;
     return 0;
@@ -182,10 +325,9 @@ bool PatchTextStub() {
     return Process::Patch(DLLFIELD_GET_STRING_STUB + 4, (u32)GetString);
 }
 
-// Puts our script file (with `text`) into the script manager's container, ready to be run with
+// Puts our script file for `d` into the script manager's container, ready to be run with
 // OUR_ID. 1 = ready, 0 = the game is busy (a script file is loading), < 0 = can't here.
-int PrepareMessage(const char* text, bool allowRunning) {
-    if (!s_imageSize) return -1;
+int PrepareDialog(const Dialog& d, bool allowRunning) {
     if (!FieldModuleLoaded()) return -2; // battle: DllField (and its text stub) isn't there
     u32 field = 0, mgr = 0, mgr2 = 0, container = 0, entries = 0, loader = 0, heap = 0, cur = 0;
     if (!Read(FIELD_PTR, field) || !Read(field + FIELD_SCRIPT_MGR, mgr) || !Read(SCRIPT_MGR_PTR, mgr2) || mgr != mgr2)
@@ -210,56 +352,48 @@ int PrepareMessage(const char* text, bool allowRunning) {
     }
     if (freeSlot < 0) return -4;
     if (!PatchTextStub()) return -7;
+    if (!Build(d)) return -1;
 
-    // Text: ASCII -> UTF-16, broken into lines of at most 32 characters at spaces (0x0A = new line).
-    s_textLen = 0;
-    int lineStart = 0, lastSpace = -1;
-    for (const char* p = text; *p && s_textLen < (int)(sizeof s_text / 2) - 1; p++) {
-        u16 c = (u8)*p;
-        if (c == '\n') { s_text[s_textLen++] = 0x0A; lineStart = s_textLen; lastSpace = -1; continue; }
-        if (c == ' ') lastSpace = s_textLen;
-        s_text[s_textLen++] = c;
-        if (s_textLen - lineStart > 32 && lastSpace > lineStart) {
-            s_text[lastSpace] = 0x0A;
-            lineStart = lastSpace + 1;
-        }
-    }
+    ToUtf16(d.intro, s_intro);
+    ToUtf16(d.text, s_text);
+    ToUtf16(d.pick, s_pick);
+    s_itemCount = d.itemCount < MAX_ITEMS ? d.itemCount : MAX_ITEMS;
+    for (int i = 0; i < s_itemCount; i++) ToUtf16(d.items[i], s_items[i]);
+    s_replyLine = 0;
 
+    // Our script file, on the game heap (the game frees it once the script has been loaded). A
+    // leftover copy in the slot may be an older dialog: always write a fresh one.
     u32 e = entries + freeSlot * ENTRY_SIZE;
-    u16 id = 0;
-    Process::Read16(e + 8, id);
-    if (id != OUR_FILE) {
-        // Our script file, on the game heap (the game frees it once the script has been loaded).
-        using Alloc = u32 (*)(u32, u32);
-        u32 buf = reinterpret_cast<Alloc>(FN_ALLOC)(s_stp, heap);
-        if (!buf) return -5;
-        std::memcpy(reinterpret_cast<void*>(buf), s_image, s_imageSize);
-        Process::Write32(e, buf);
-        Process::Write32(e + 4, s_imageSize);
-        Process::Write16(e + 8, OUR_FILE);
-    }
+    using Alloc = u32 (*)(u32, u32);
+    u32 buf = reinterpret_cast<Alloc>(FN_ALLOC)(s_stp, heap);
+    if (!buf) return -5;
+    std::memcpy(reinterpret_cast<void*>(buf), s_image, s_imageSize);
+    Process::Write32(e, buf);
+    Process::Write32(e + 4, s_imageSize);
+    Process::Write16(e + 8, OUR_FILE);
     return 1;
 }
 
 constexpr u16 FRIEND_FIRST = 0xE1, FRIEND_LAST = 0xE8;  // ids of friends' trainers (Puppet.cpp)
 constexpr u32 MM_VTABLE = 0x005DF560;
-TalkTextFn s_textFn = nullptr;
+TalkDialogFn s_talkFn = nullptr;
 Hook s_runHook;
 
 // FUN_003DC114(field, id, target, ...): the game's "run script" event. Talking to an NPC runs the
 // NPC's script id; our friends' trainers have none (0), and a request for script 0 never resolves:
 // the script runner then spins forever (seen: game froze when A was pressed at a friend). So for
-// them we run our message script with the friend's greeting instead; the game handles the rest
-// of the conversation like any NPC's (player locked, A to close).
+// them we run our dialog script instead; the game handles the rest of the conversation like any
+// NPC's (player locked, A to close).
 u32 RunScriptHook(u32 field, u32 id, u32 target, u32 p4, u32 p5, u32 p6, u32 p7) {
     HookContext& ctx = HookContext::GetCurrent();
     u32 vt = 0;
     u16 who = 0;
     if (id == 0 && target && Process::Read32(target, vt) && vt == MM_VTABLE && Process::Read16(target + 0xC, who) &&
         who >= FRIEND_FIRST && who <= FRIEND_LAST) {
-        char text[64] = "...";
-        if (s_textFn) s_textFn(who, text, sizeof text);
-        if (PrepareMessage(text, true) == 1) {
+        Dialog d;
+        std::strcpy(d.text, "...");
+        if (s_talkFn) s_talkFn(who, d);
+        if (PrepareDialog(d, true) == 1) {
             s_resolving = true;
             u32 ev = ctx.OriginalFunction<u32>(field, OUR_ID, target, p4, p5, p6, p7);
             s_resolving = false;
@@ -271,9 +405,9 @@ u32 RunScriptHook(u32 field, u32 id, u32 target, u32 p4, u32 p5, u32 p6, u32 p7)
 
 } // namespace
 
-bool InstallTalkHooks(TalkTextFn textFn) {
-    Build();
-    s_textFn = textFn;
+bool InstallTalkHooks(TalkDialogFn talkFn, DialogResultFn resultFn) {
+    s_talkFn = talkFn;
+    s_resultFn = resultFn;
     s_resolveHook.InitializeForMitm(FN_RESOLVE_ID, (u32)ResolveHook);
     s_runHook.InitializeForMitm(FN_RUN_SCRIPT, (u32)RunScriptHook);
     return s_resolveHook.Enable() == HookResult::Success && s_runHook.Enable() == HookResult::Success;
@@ -284,8 +418,8 @@ bool GameScriptRunning() {
     return Read(FIELD_PTR, field) && Read(field + FIELD_SCRIPT_MGR, mgr) && Process::Read32(mgr + MGR_CURRENT, cur) && cur;
 }
 
-int ShowGameMessage(const char* text) {
-    int r = PrepareMessage(text, false);
+int ShowGameDialog(const Dialog& d) {
+    int r = PrepareDialog(d, false);
     if (r != 1) return r;
     u32 field = 0;
     if (!Read(FIELD_PTR, field)) return -2;
@@ -294,6 +428,12 @@ int ShowGameMessage(const char* text) {
     u32 ev = reinterpret_cast<RunScript>(FN_RUN_SCRIPT)(field, OUR_ID, 0, 0, 0, 0, 0);
     s_resolving = false;
     return ev ? 1 : -6;
+}
+
+int ShowGameMessage(const char* text) {
+    Dialog d;
+    std::strncpy(d.text, text, sizeof d.text - 1);
+    return ShowGameDialog(d);
 }
 
 } // namespace game

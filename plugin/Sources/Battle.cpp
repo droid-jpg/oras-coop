@@ -108,7 +108,7 @@ bool WritePartySlot(int slot, const u8* in) {
     return true;
 }
 
-bool DescribePokemon(const u8* pk, u16& species, u8& level) {
+bool DescribePokemon(const u8* pk, u16& species, u8& level, char* nickname, int nickLen) {
     static const char ORDER[24][5] = {
         "ABCD", "ABDC", "ACBD", "ACDB", "ADBC", "ADCB", "BACD", "BADC", "BCAD", "BCDA", "BDAC", "BDCA",
         "CABD", "CADB", "CBAD", "CBDA", "CDAB", "CDBA", "DABC", "DACB", "DBAC", "DBCA", "DCAB", "DCBA",
@@ -124,6 +124,20 @@ bool DescribePokemon(const u8* pk, u16& species, u8& level) {
     const u8* a = d + 8 + posA * 56;
     species = (u16)(a[0] | a[1] << 8);
     level = d[PK_DATA + 4];
+    if (nickname && nickLen > 1) {
+        // Nickname: 12 UTF-16 characters at 0x40 of the unshuffled data (start of block B).
+        int posB = (int)(std::strchr(ORDER[sv], 'B') - ORDER[sv]);
+        const u8* nb = d + 8 + posB * 56;
+        int n = 0;
+        for (int i = 0; i < 12 && n < nickLen - 1; i++) {
+            u16 c = (u16)(nb[i * 2] | nb[i * 2 + 1] << 8);
+            if (!c) break;
+            if (c == 0xE9 || c == 0xC9) c = 'e';
+            else if (c < 0x20 || c > 0x7E) c = '?';
+            nickname[n++] = (char)c;
+        }
+        nickname[n] = 0;
+    }
     return species > 0 && species <= MAX_SPECIES && level >= 1 && level <= 100;
 }
 

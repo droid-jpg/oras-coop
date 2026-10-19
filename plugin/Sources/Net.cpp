@@ -188,13 +188,17 @@ void ApplyTrade(const Frame& f, u8 id) {
         t.theirChunks |= 1u << chunk;
         if (t.theirChunks == (1u << CHUNKS) - 1 && !t.theirComplete) {
             t.theirComplete = true;
-            PushNotice(name + " offers " + Describe(t.theirs) + "! (SELECT > Trade)", id);
+            if (t.mySlot >= 0) // they answered our offer
+                PushNotice(name + " offers " + Describe(t.theirs) + " for " + Describe(t.mine) + "! Talk to " + name + ".", id);
+            else
+                PushNotice(name + " wants to trade " + Describe(t.theirs) + "! Talk to " + name + ".", id);
         }
     } else if (op == TRADE_ACCEPT && t.partner == id) {
         t.theyAccepted = true;
         t.theirHash = f.get<u32>(8);
-        if (t.iAccepted && t.theirHash == TradeHash(t, g_session.myId)) t.pendingWrite = true;
-        else if (!t.iAccepted) PushNotice(name + " accepted the trade. (SELECT > Trade)", id);
+    } else if (op == TRADE_COMMIT && t.partner == id) {
+        // The server saw both accepts for the same pair of Pokemon and told both of us at once.
+        if (t.iAccepted && f.get<u32>(8) == TradeHash(t, g_session.myId)) t.pendingWrite = true;
     }
 }
 

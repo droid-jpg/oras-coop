@@ -55,7 +55,7 @@ sock.on('data', (d) => {
       case T.CHAT: console.log(`chat #${id} ${names[id] ?? ''}: ${cstr(f, 4, 40)}`); break;
       case T.TALK: console.log(`talk #${id} ${names[id] ?? ''} -> #${f[4]}`); break;
       case T.BATTLE: console.log(`battle #${id} side=${f[4]} count=${f[5]}` + [...Array(f[5])].map((_, i) => ` [${f.readUInt16LE(6 + i * 7)} ${f.readUInt16LE(8 + i * 7)}/${f.readUInt16LE(10 + i * 7)} L${f[12 + i * 7]}]`).join('')); break;
-      case T.TRADE: console.log(`trade #${id} op=${f[4]} to=#${f[5]} chunk=${f[6]}/${f[7]}`); break;
+      case T.TRADE: console.log(`trade #${id} op=${f[4]} to=#${f[5]} chunk=${f[6]}/${f[7]}`); if (f[5] === myId) onTrade(f, id); break;
       case T.ERROR: console.log(`error code ${f[4]}`); break;
     }
   }
@@ -88,6 +88,42 @@ setInterval(() => {
   s.writeUInt32LE(Date.now() >>> 0, 40); // sender clock (ms), lets receivers interpolate
   sock.write(s);
 }, 66);
+
+// --trader: answers a trade like a player who picks one back and accepts. Offers --offer <file>
+// (a 0x104-byte Pokemon saved by an earlier run), else the same Pokemon back. Saves what it got
+// to --save <file>. --offer-first <id>: offers to player <id> right away.
+const PK = 0x104, CHUNK = 40, CHUNKS = Math.ceil(PK / CHUNK);
+const trade = { from: 0, got: Buffer.alloc(PK), mask: 0, mine: null };
+function fnv(...bufs) { let h = 2166136261; for (const b of bufs) for (const x of b) h = Math.imul(h ^ x, 16777619) >>> 0; return h; }
+function sendOffer(to, pk) {
+  for (let c = 0; c < CHUNKS; c++) {
+    const f = frame(T.TRADE); f[4] = 1; f[5] = to; f[6] = c; f[7] = CHUNKS;
+    pk.copy(f, 8, c * CHUNK, Math.min(PK, c * CHUNK + CHUNK)); sock.write(f);
+  }
+}
+function sendAccept(to) {
+  const h = myId < to ? fnv(trade.mine, trade.got) : fnv(trade.got, trade.mine);
+  const f = frame(T.TRADE); f[4] = 2; f[5] = to; f.writeUInt32LE(h, 8); sock.write(f);
+  console.log(`accepted, hash ${h.toString(16)}`);
+}
+async function onTrade(f, id) {
+  if (!args.trader) return;
+  const op = f[4];
+  if (op === 1) {
+    if (f[6] === 0) { trade.from = id; trade.mask = 0; }
+    f.copy(trade.got, f[6] * CHUNK, 8, 8 + Math.min(CHUNK, PK - f[6] * CHUNK));
+    trade.mask |= 1 << f[6];
+    if (trade.mask !== (1 << CHUNKS) - 1) return;
+    console.log(`got a complete offer from #${id}`);
+    if (args.save) (await import('node:fs')).writeFileSync(args.save, trade.got);
+    if (!trade.mine) { trade.mine = args.offer ? (await import('node:fs')).readFileSync(args.offer) : Buffer.from(trade.got); sendOffer(id, trade.mine); }
+    sendAccept(id);
+  } else if (op === 3) { console.log('trade cancelled'); trade.mine = null; }
+  else if (op === 4) { console.log(`COMMIT from #${id}, hash ${f.readUInt32LE(8).toString(16)}`); trade.mine = null; }
+}
+if (args['offer-first'] && args.offer) {
+  setTimeout(async () => { trade.mine = (await import('node:fs')).readFileSync(args.offer); sendOffer(Number(args['offer-first']), trade.mine); console.log('offered first'); }, 2000);
+}
 
 if (opt.battle) {
   // Our team: species 258 Lv12 and 255 Lv10; the opponent: 261 Lv8. Opponent HP ticks down.

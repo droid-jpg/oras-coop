@@ -13,6 +13,7 @@ const IDLE_TIMEOUT_MS = 10000;
 const MAX_FRAMES_PER_SEC = 60;
 
 const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12 };
+const TRADE = { OFFER: 1, ACCEPT: 2, CANCEL: 3, COMMIT: 4 };
 const ERR = { ROOM_FULL: 1, BAD_HELLO: 2, VERSION: 3 };
 
 /** @type {Map<string, Map<number, Client>>} */
@@ -46,6 +47,7 @@ class Client {
     this.lastSeen = Date.now();
     this.windowStart = Date.now();
     this.framesInWindow = 0;
+    this.accepts = new Map(); // partner id -> hash this player accepted a trade for
     this.helloTimer = setTimeout(() => this.drop('no hello'), HELLO_TIMEOUT_MS);
 
     sock.setNoDelay(true);
@@ -92,15 +94,45 @@ class Client {
       case T.GREET:
       case T.TALK:
       case T.BATTLE:
-      case T.TRADE:
         f[1] = this.id; // stamp the real sender
         this.broadcast(f);
+        break;
+      case T.TRADE:
+        f[1] = this.id;
+        if (f[4] === TRADE.COMMIT) break; // only the server commits
+        this.broadcast(f);
+        this.trade(f);
         break;
       case T.PING:
         break;
       default:
         break; // ignore unknown types for forward compatibility
     }
+  }
+
+  // Trades commit only when both players accepted the same pair of Pokemon: the server then tells
+  // both at once, so one lost ACCEPT can't leave one game swapped and the other not.
+  trade(f) {
+    const op = f[4], target = f[5], hash = f.readUInt32LE(8);
+    const partner = rooms.get(this.room)?.get(target);
+    if (op === TRADE.OFFER || op === TRADE.CANCEL) {
+      this.accepts.delete(target);
+      partner?.accepts.delete(this.id);
+      return;
+    }
+    if (op !== TRADE.ACCEPT) return;
+    this.accepts.set(target, hash);
+    if (!partner || partner.accepts.get(this.id) !== hash) return;
+    this.accepts.delete(target);
+    partner.accepts.delete(this.id);
+    for (const [to, from] of [[this, partner], [partner, this]]) {
+      const c = frame(T.TRADE, from.id);
+      c[4] = TRADE.COMMIT;
+      c[5] = to.id;
+      c.writeUInt32LE(hash, 8);
+      to.send(c);
+    }
+    log(`trade room=${this.room} ${this.name}#${this.id} <-> ${partner.name}#${partner.id}`);
   }
 
   hello(f) {
@@ -154,6 +186,7 @@ class Client {
     const room = rooms.get(this.room);
     if (room && room.get(this.id) === this) {
       room.delete(this.id);
+      for (const other of room.values()) other.accepts.delete(this.id); // ids get reused
       this.broadcast(frame(T.LEAVE, this.id));
       log(`leave room=${this.room} id=${this.id} name=${this.name} (${room.size} left)`);
       if (room.size === 0) rooms.delete(this.room);

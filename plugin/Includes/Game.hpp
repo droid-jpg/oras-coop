@@ -138,13 +138,32 @@ bool RivalIsMay();
 // 3D data for this map, so SpawnCharacter can use it.
 bool IsModelResident(u16 model);
 
-// The game's own field text box (Talk.cpp): runs a tiny script of ours through the game's
-// script system, so the text shows exactly like an NPC's line and the player waits for A/B.
-// textFn gives the line a friend's trainer says when the player talks to it (A in front of it;
-// charId = its character id, 0xE1..0xE8), from the game thread.
-using TalkTextFn = bool (*)(u16 charId, char* out, int len);
-bool InstallTalkHooks(TalkTextFn textFn);
+// Dialogs in the game's own field text box (Talk.cpp): runs a small script of ours through the
+// game's script system, so it looks and behaves exactly like talking to an NPC (the player waits).
+//   Message:   [intro page] then `text`.
+//   YesNo:     [intro] then `text` as a question with the game's Yes/No; the answer goes to the
+//              result callback, which writes the reply line.
+//   YesNoPick: as YesNo, and on Yes `pick` is asked with the game's choice list of `items`; the
+//              index chosen (0xFF = backed out with B) goes to the result callback.
+enum class DialogKind : u8 { Message, YesNo, YesNoPick };
+constexpr int DIALOG_ITEMS = 6;
+struct Dialog {
+    char intro[96] = {0};
+    char text[96] = {0};
+    DialogKind kind = DialogKind::Message;
+    char pick[64] = {0};                  // YesNoPick: the question above the list
+    char items[DIALOG_ITEMS][32] = {};    // YesNoPick: the choices
+    int itemCount = 0;
+};
+// Answer: the Yes/No result as the game stores it (non-zero = Yes). Slot: the party slot picked.
+enum class DialogResult : u8 { Answer, Slot };
+using DialogResultFn = void (*)(DialogResult what, int value, char* reply, int len);
+// talkFn fills the dialog for a friend's trainer the player talks to (A in front of it; charId =
+// its character id, 0xE1..0xE8). Both callbacks run on the game thread.
+using TalkDialogFn = bool (*)(u16 charId, Dialog& out);
+bool InstallTalkHooks(TalkDialogFn talkFn, DialogResultFn resultFn);
 // 1 = started; 0 = the game is busy (another script / loading), try again later; < 0 = can't here.
+int ShowGameDialog(const Dialog& d);
 int ShowGameMessage(const char* text);
 // True while any field script runs (ours included).
 bool GameScriptRunning();
@@ -179,7 +198,7 @@ constexpr int PK_DATA = 0xE8, PK_STATS = 0x1C, PK_SIZE = PK_DATA + PK_STATS;
 int PartyCount();
 bool ReadPartySlot(int slot, u8* out);         // PK_SIZE bytes
 bool WritePartySlot(int slot, const u8* in);   // replaces that slot (field only, no menu open)
-bool DescribePokemon(const u8* pk, u16& species, u8& level);
+bool DescribePokemon(const u8* pk, u16& species, u8& level, char* nickname = nullptr, int nickLen = 0);
 
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);

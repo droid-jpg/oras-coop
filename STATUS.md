@@ -30,8 +30,8 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Joins/leaves during battles and cutscenes | ✅ nothing is spawned or deleted while DllField is unloaded (battles) or while a script, text box or menu is up; it happens once that ends. Tested: three friends joining and leaving on your map mid-battle, and a friend leaving while you were in a text box with them |
 | Busy friends keep animating | ✅ a friend walking under script control (cutscene) moves its legs instead of sliding |
 | Watching a friend's battle | ✅ press A on a friend in a battle: the game's text box shows what each side has out with HP, and the bottom screen lists both teams with live HP bars. Read from DllBattle's memory (`Battle.cpp`), sent as BATTLE frames. Tested on a real wild battle and a fake one |
-| Trading | ✅ SELECT → Trade: pick a friend and a party Pokémon, they offer one back, both accept, and each game swaps in the other Pokémon once back on the plain field (the game's own party screen shows it). Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows |
-| Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting) opens in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
+| Trading | ✅ all by talking, in the game's own text box: A on a friend → "Trade Pokemon with X?" Yes → the game's choice list of your party → offer sent. X talks to you → "X offers ..." Yes → picks one back (that also accepts). You talk to X again → "You give / You get … Trade with X?" Yes. The server confirms both accepts to both games at once (COMMIT), then each swaps in the other Pokémon once back on the plain field. B backs out of the list; No calls a trade off. Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows and with a fake trader |
+| Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting), then the trade question, open in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
 
 ## Known bugs (found playing over Tailscale, 2026-10-19)
 
@@ -74,6 +74,8 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 - **Battles between players.** Not started. Needs the game's link-battle setup (DllBattle's
   communication layer); expect several sessions of reverse engineering.
-- **Trade safety.** If the connection drops between the two ACCEPTs, one side can end up with
-  both Pokémon (or neither). A server-side commit step would close that gap.
+- **More through talking.** Chat still needs SELECT → Send chat (typing needs the keyboard).
+  The rest of the plugin menu is setup and debug entries.
+- **Trade animation.** DllField has CallFieldTradeDemo (the in-game trade cutscene); playing it
+  after a trade would need its arguments worked out, like the list menu's.
 - Show friends on other maps' doors/warps (e.g. "Bot is inside"), and a /who list in chat.

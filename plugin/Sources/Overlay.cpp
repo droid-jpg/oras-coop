@@ -168,17 +168,166 @@ bool InBattle(const Remote& r) {
     return r.away && r.battle.active && osGetTime() - r.battleTime < BATTLE_FRESH_MS;
 }
 
-// What a friend "says" when we talk to them: their greeting, or what's out in their battle.
-std::string FriendLine(const Remote& r) {
+// "Wingull Lv20", or "Bianca (Azelf Lv100)" when it has a nickname, for a party Pokemon's data.
+std::string MonLabel(const u8* pk) {
+    u16 species = 0;
+    u8 level = 0;
+    char nick[16] = {0}, sp[16] = {0};
+    if (!game::DescribePokemon(pk, species, level, nick, sizeof nick)) return "a Pokemon";
+    std::string plain = MonName(species, level);
+    if (!nick[0] || (game::SpeciesName(species, sp, sizeof sp) && std::strcmp(sp, nick) == 0)) return plain;
+    return std::string(nick) + " (" + plain + ")";
+}
+
+// The YesNoPick list: our party, for choosing what to offer.
+void FillPartyChoices(game::Dialog& d) {
+    snprintf(d.pick, sizeof d.pick, "Which Pokemon will you offer?");
+    d.itemCount = 0;
+    u8 pk[game::PK_SIZE];
+    for (int i = 0; i < game::PartyCount() && i < game::DIALOG_ITEMS; i++) {
+        snprintf(d.items[i], sizeof d.items[i], "%s", game::ReadPartySlot(i, pk) ? MonLabel(pk).c_str() : "?");
+        d.itemCount = i + 1;
+    }
+}
+
+// ---- What friends say: greetings, their battle, and trades ----
+// Talking to a friend (A in front of their trainer) opens a dialog in the game's own text box.
+// Trading runs entirely through it: "Trade Pokemon with X?" Yes -> the game's party screen ->
+// your offer goes to X. X talks to you -> "X offers ..." Yes -> picks one back, which also
+// accepts. You talk to X again -> "Trade your A for X's B?" Yes. The server then confirms both
+// accepts to both games at once (COMMIT), and each swaps in the other Pokemon.
+enum class Purpose : u8 { None, Offer, AnswerOffer, CancelWaiting, Accept };
+struct DialogCtx {
+    int id = 0;
+    Purpose purpose = Purpose::None;
+};
+DialogCtx g_dialog;   // the dialog running now (results arrive on the game thread while it runs)
+
+game::Dialog FriendDialog(int id) {
+    game::Dialog d;
+    g_dialog = DialogCtx();
+    g_dialog.id = id;
+    g_session.lock.Lock();
+    const Remote r = g_session.remotes[id];
+    const Trade t = g_session.trade;
+    g_session.lock.Unlock();
+    std::string name = r.name, greeting = r.greeting[0] ? r.greeting : "...";
+    auto set = [](char* dst, const std::string& s) { snprintf(dst, 96, "%s", s.c_str()); };
+
     if (InBattle(r)) {
         const game::BattleMon &a = r.battle.mon[0][0], &b = r.battle.mon[1][0];
+        set(d.intro, name + " is in a battle!");
         char buf[96];
         snprintf(buf, sizeof buf, "%s HP %u/%u\nvs %s HP %u/%u", MonName(a.species, a.level).c_str(),
                  (unsigned)a.hp, (unsigned)a.maxHp, MonName(b.species, b.level).c_str(), (unsigned)b.hp,
                  (unsigned)b.maxHp);
-        return buf;
+        set(d.text, buf);
+        return d;
     }
-    return r.greeting[0] ? r.greeting : "...";
+    if (t.partner && t.partner != id) { // trading with someone else: just chat
+        set(d.text, greeting);
+        return d;
+    }
+    if (!t.partner) {
+        set(d.intro, greeting);
+        set(d.text, "Trade Pokemon with " + name + "?");
+        d.kind = game::DialogKind::YesNoPick;
+        FillPartyChoices(d);
+        g_dialog.purpose = Purpose::Offer;
+    } else if (t.mySlot < 0) {
+        if (!t.theirComplete) { set(d.text, greeting); return d; } // their offer is still arriving
+        set(d.intro, name + " offers " + MonLabel(t.theirs) + ".");
+        set(d.text, "Offer one of yours for it?");
+        d.kind = game::DialogKind::YesNoPick;
+        FillPartyChoices(d);
+        g_dialog.purpose = Purpose::AnswerOffer;
+    } else if (!t.theirComplete) {
+        set(d.intro, "You offered " + MonLabel(t.mine) + ".\nWaiting for " + name + " to pick one.");
+        set(d.text, "Call off the trade?");
+        d.kind = game::DialogKind::YesNo;
+        g_dialog.purpose = Purpose::CancelWaiting;
+    } else if (!t.iAccepted) {
+        set(d.intro, "You give: " + MonLabel(t.mine) + "\nYou get: " + MonLabel(t.theirs));
+        set(d.text, "Trade with " + name + "?");
+        d.kind = game::DialogKind::YesNo;
+        g_dialog.purpose = Purpose::Accept;
+    } else {
+        set(d.text, "Waiting for " + name + " to confirm\nthe trade...");
+    }
+    return d;
+}
+
+// The game's Yes/No answer as the Surf script reads it: non-zero = Yes.
+bool IsYes(int answer) { return answer != 0; }
+
+// Acts on an answer in the running dialog and writes the reply line (game thread).
+void OnDialogResult(game::DialogResult what, int value, char* reply, int len) {
+    const DialogCtx ctx = g_dialog;
+    g_dialog.purpose = Purpose::None; // one answer per dialog
+    g_session.lock.Lock();
+    Trade& t = g_session.trade;
+    std::string name = ctx.id >= 1 && ctx.id <= MAX_ID ? g_session.remotes[ctx.id].name : "them";
+    std::string text = "Maybe next time.";
+    bool partnerOk = t.partner == 0 || t.partner == ctx.id;
+    switch (ctx.purpose) {
+    case Purpose::Offer:
+    case Purpose::AnswerOffer: {
+        if (what == game::DialogResult::Answer) { // said No
+            if (ctx.purpose == Purpose::AnswerOffer && t.partner == ctx.id) {
+                t.sendCancel = true;
+                text = "You turned down the trade.";
+            }
+            break;
+        }
+        u8 pk[game::PK_SIZE];
+        if (value >= game::PartyCount() || !game::ReadPartySlot(value, pk)) break; // backed out
+        if (!partnerOk) { text = "Someone else is trading with you."; break; }
+        if (ctx.purpose == Purpose::AnswerOffer && !(t.partner == ctx.id && t.theirComplete)) {
+            text = name + " called off the trade.";
+            break;
+        }
+        if (!t.partner) { t = Trade(); t.partner = (u8)ctx.id; }
+        t.mySlot = value;
+        std::memcpy(t.mine, pk, game::PK_SIZE);
+        t.sendOffer = true;
+        if (ctx.purpose == Purpose::AnswerOffer) {
+            // Picking one back means "yes, this for that".
+            t.iAccepted = true;
+            t.sendAccept = true;
+            text = "You offered " + MonLabel(pk) + ".\nWaiting for " + name + " to confirm.";
+        } else {
+            text = "You offered " + MonLabel(pk) + ".\nWaiting for " + name + " to pick one.";
+        }
+        break;
+    }
+    case Purpose::CancelWaiting:
+        if (IsYes(value) && t.partner == ctx.id) { t.sendCancel = true; text = "You called off the trade."; }
+        else text = "OK, let's wait.";
+        break;
+    case Purpose::Accept: {
+        if (!IsYes(value)) {
+            if (t.partner == ctx.id) t.sendCancel = true;
+            text = "You called off the trade.";
+            break;
+        }
+        u8 now[game::PK_SIZE];
+        if (t.partner != ctx.id || !t.theirComplete) { text = name + " called off the trade."; break; }
+        if (!game::ReadPartySlot(t.mySlot, now) || std::memcmp(now, t.mine, game::PK_SIZE) != 0) {
+            t.sendCancel = true;
+            text = "Your party changed, so the\ntrade was called off.";
+            break;
+        }
+        t.iAccepted = true;
+        t.sendAccept = true;
+        text = "Trading with " + name + "...";
+        break;
+    }
+    case Purpose::None:
+        text = "...";
+        break;
+    }
+    g_session.lock.Unlock();
+    snprintf(reply, len, "%s", text.c_str());
 }
 
 // ---- Talking to a friend ----
@@ -264,9 +413,10 @@ void UpdateTalk(const View& v) {
     g_talk.id = id;
     g_talk.start = now;
     g_talk.name = r.name;
-    g_talk.text = FriendLine(r);
-    // The game's own text box when it can start one right now; our drawn copy otherwise.
-    int res = game::ShowGameMessage(g_talk.text.c_str());
+    game::Dialog d = FriendDialog(id);
+    g_talk.text = d.text;
+    // The game's own text box when it can start one right now; our drawn copy (text only) otherwise.
+    int res = game::ShowGameDialog(d);
     if (res == 0) return; // the game is busy this frame (another script): ignore the press
     g_talk.open = true;
     g_talk.native = res == 1;
@@ -577,7 +727,7 @@ void DrawTop(const Screen& s) {
     // (The lock comes a few frames before the menu bit; once the menu is up the game stops
     // redrawing the top screen, so whatever we drew last would stay frozen on it.)
     bool gameUi = v.me.menuOpen || v.me.locked;
-    if (!gameUi) DrawStatus(s, v);
+    if (!gameUi && v.me.inField) DrawStatus(s, v); // not over battles, the party screen, the bag...
     DrawNotice(s, v, !gameUi && v.me.inField);
     if (!v.overlay || gameUi) return;
     for (int id = 1; id <= MAX_ID; id++) {
@@ -616,7 +766,7 @@ void DrawBottom(const Screen& s) {
         char buf[64];
         const char* bike = r.surfing ? " (surfing)" : r.riding ? " (bike)" : "";
         const char* status = r.away ? " (busy)" : bike; // busy: battle, soaring...
-        if (!r.hasState) snprintf(buf, sizeof buf, "%s  (loading)", r.name);
+        if (!r.hasState) snprintf(buf, sizeof buf, "%s  (starting the game)", r.name); // no position yet
         else if (sameMap) snprintf(buf, sizeof buf, "%s  here%s", r.name, status);
         else snprintf(buf, sizeof buf, "%s  %s%s", r.name, PlaceOf(r.map).c_str(), status);
         if (TextWidth(buf) > LIST_W - 8) buf[(LIST_W - 8) / 6] = 0;
@@ -641,13 +791,12 @@ void DrawBottom(const Screen& s) {
 } // namespace
 
 // Called by the game's talk event (Talk.cpp) when the player presses A at a friend's trainer.
-bool FriendGreeting(u16 charId, char* out, int len) {
+bool FriendTalk(u16 charId, game::Dialog& out) {
     int id = (int)charId - 0xE0; // Puppet.cpp: character id = 0xE0 + player id
-    if (id < 1 || id > MAX_ID || len < 2) return false;
+    if (id < 1 || id > MAX_ID) return false;
+    out = FriendDialog(id);
     g_session.lock.Lock();
-    const Remote& r = g_session.remotes[id];
-    snprintf(out, len, "%s", FriendLine(r).c_str());
-    std::string name = r.name;
+    std::string name = g_session.remotes[id].name;
     g_session.pendingTalk = (u8)id;
     g_session.lock.Unlock();
     g_talk = Talk();
@@ -656,8 +805,12 @@ bool FriendGreeting(u16 charId, char* out, int len) {
     g_talk.id = id;
     g_talk.start = osGetTime();
     g_talk.name = name;
-    g_talk.text = out;
+    g_talk.text = out.text;
     return true;
+}
+
+void FriendDialogResult(game::DialogResult what, int value, char* reply, int len) {
+    OnDialogResult(what, value, reply, len);
 }
 
 bool OverlayCallback(const Screen& screen) {
