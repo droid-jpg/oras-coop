@@ -14,14 +14,15 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Smooth movement | ✅ friends are shown 120 ms behind, interpolated between packets (sender clock in STATE @40) |
 | **Real models** (Display → Real models) | ✅ spawns a trainer per friend with the game's own spawn fn, drives position + facing every frame, despawns cleanly |
 | Walk/run animation on spawned trainers | ✅ walk 0x10 / run 0x19 (verified with a real running player), stand when stopped |
-| Player-to-player collision | ✅ you can't walk through a friend's trainer (its collision tile follows it) |
+| Player-to-player collision | ✅ you can't walk through a friend's trainer; it stops blocking while it shares your tile (else you'd be trapped), tested with two real players |
+| Two players on one PC | ✅ two Azahar windows on the relay: see each other, walk, map changes, collision |
 | Friend's own trainer (Brendan vs May) | ✅ the map loader is hooked to load their model on every map change; a friend who joins mid-map shows as the rival model (Littleroot) or yours until the next map change |
 | Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game). Battles not tested yet |
 
 ## Notes for the next session
 
 - Everything above is verified in Azahar with the fake friend (and a real running player for
-  the run clip). Not yet tried with two real Azahar instances over the internet.
+  the run clip), and with two Azahar windows on one PC. Not yet tried over the internet.
 - Details for every address/function are in `re/NOTES.md` (action table, anim byte mm+0x58,
   grid records, resident model table + list-loader hook, camera matrix, field-active flag).
 - The model hook only knows Brendan/May; other outfits/characters would need their ids added.

@@ -25,6 +25,7 @@ constexpr float RUN_SPEED = 105.0f;     // units/s; walking is ~77 (18 units per
 constexpr u8 ANIM_MAX  = 0x30;          // ignore ids outside the on-foot range (bike, surf...)
 constexpr float MOVE_EPS = 0.25f;       // world units per frame that count as moving
 constexpr u64 MOVE_HOLD_MS = 200;       // keep the clip playing across small update gaps
+constexpr float OVERLAP_OUT = 24.0f;    // after sharing a tile, block again once this far apart
 
 struct Spawned {
     bool active = false;
@@ -36,6 +37,7 @@ struct Spawned {
     u64 movingUntil = 0;
     u8 moveAnim = 0;                    // clip chosen for the current movement (0 = pick one)
     bool fromSender = false;            // moveAnim came from the sender's anim byte
+    bool solid = true;                  // blocks us (off while it shares our tile)
 };
 
 Spawned s_spawned[MAX_ID + 1];
@@ -150,7 +152,14 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         }
         float dx = r.dirX, dy = r.dirY;
         if (dx == 0 && dy == 0) game::FacingToDir(r.facing, dx, dy);
-        if (!game::Puppet(s.mm, r.dx, r.dz, r.dy, dx, dy)) { Forget(s); continue; } // slot reclaimed
+        // Solid unless it overlaps us: two characters on one tile trap the local player (seen with
+        // two real players coming out of the same door). Hysteresis avoids flicker at the edge.
+        float ox = r.dx - me.x, oy = r.dy - me.y, d2 = ox * ox + oy * oy;
+        bool sameTile = std::floor(r.dx / 18.0f) == std::floor(me.x / 18.0f) &&
+                        std::floor(r.dy / 18.0f) == std::floor(me.y / 18.0f);
+        if (s.solid && sameTile) s.solid = false;
+        else if (!s.solid && d2 > OVERLAP_OUT * OVERLAP_OUT) s.solid = true;
+        if (!game::Puppet(s.mm, r.dx, r.dz, r.dy, dx, dy, s.solid)) { Forget(s); continue; } // slot reclaimed
         game::SetAnim(s.mm, PickAnim(s, r, now));
     }
 }

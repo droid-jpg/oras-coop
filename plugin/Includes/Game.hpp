@@ -56,7 +56,9 @@ bool SetAnim(u32 addr, u8 anim);
 
 // Moves a move model's real model: position, facing, and the "moving" flag so the
 // game pushes the new transform. Returns false if `addr` is no longer a valid slot.
-bool Puppet(u32 addr, float x, float z, float y, float dirX, float dirY);
+// solid = blocks the local player (its collision tile follows it); pass false while it overlaps
+// the player, or the player gets stuck inside it.
+bool Puppet(u32 addr, float x, float z, float y, float dirX, float dirY, bool solid = true);
 
 // Spawns a new field character through the game's own spawn function (FUN_003F584C), the
 // same path the game uses for the player. `model` should be one already loaded on the map

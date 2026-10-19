@@ -166,6 +166,7 @@ constexpr u32 MM_TILE_PREV = 0x64;
 constexpr u32 MM_TILE_CUR  = 0x90;
 constexpr u32 MM_TILE_NEXT = 0xBC;
 constexpr float TILE = 18.0f;
+constexpr float NO_TILE = -1000.0f; // tile coordinate no map uses (collision off)
 // Facing: cos at these offsets, sin at the paired ones.
 constexpr u32 MM_COS[] = { 0x1C, 0x28, 0x34, 0x48 };
 constexpr u32 MM_SIN[] = { 0x24, 0x30, 0x3C, 0x40 };
@@ -239,7 +240,7 @@ bool ReadPlayerDir(float& dirX, float& dirY, u8* anim) {
     return true;
 }
 
-bool Puppet(u32 a, float x, float z, float y, float dirX, float dirY) {
+bool Puppet(u32 a, float x, float z, float y, float dirX, float dirY, bool solid) {
     u32 flags4 = 0, flags8 = 0;
     if (!IsSlot(a) || !Process::Read32(a + MM_FLAGS4, flags4) || !(flags4 & 1)) return false;
     Process::WriteFloat(a + MM_POS, x);
@@ -257,7 +258,8 @@ bool Puppet(u32 a, float x, float z, float y, float dirX, float dirY) {
         Process::Write32(a + MM_FLAGS8, flags8 | MOVING);
     }
     // Keep the collision tiles on the character, otherwise it blocks its spawn tile forever.
-    float tx = std::floor(x / TILE), ty = std::floor(y / TILE);
+    // Not solid: park them far off the map, so a player standing inside it can walk out.
+    float tx = solid ? std::floor(x / TILE) : NO_TILE, ty = solid ? std::floor(y / TILE) : NO_TILE;
     float cx = 0, cy = 0;
     Process::ReadFloat(a + MM_TILE_CUR + 4, cx);
     Process::ReadFloat(a + MM_TILE_CUR + 0xC, cy);
