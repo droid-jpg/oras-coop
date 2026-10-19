@@ -204,25 +204,47 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
   by position only kept blocking its spawn tile; after writing its current tile the player
   stopped right in front of it). Plugin writes all three to the current tile every frame.
 
-### Other trainer models (2026-10-19, partial)
+### ✅ Other trainer models — May/Brendan (2026-10-19)
 
 - Player model by gender (DllField `FUN_0070A614`): 0 → **0xAC Brendan**, 1 → **0xAB May**.
-  Loaded once into resident slot 0 by `FUN_003F7640` (flag manager+0x36AB) via
-  `FUN_00128E4C(manager+0x36B4, FUN_0019C678(model), manager+0x36CC)`.
-- `FUN_00128E4C(archive, file, out)` = generic synchronous "read file from archive" (60+ callers).
-  `0x0019C678` = import stub model id → archive file index.
+  Archive file index = model id for both. Loaded once into resident slot 0 by `FUN_003F7640`
+  (flag manager+0x36AB) via `FUN_00128E4C(manager+0x36B4, FUN_0019C678(model), manager+0x36CC)`.
+- `FUN_00128E4C(archive, file, out)` = generic synchronous file read (60+ callers); during a map
+  load it's only used for descriptors (player slot 0, variable models), not 3D data.
 - Resident table: u32 count @0x36C8 (copy @0x36C4), 0x18-byte descriptors @0x36CC
-  (u16 model, flags, u32 file index @+0x14), max 0x20. Map loader `FUN_003F7728` reads the
-  per-map list file into slots 1.. (FUN_0036ED10), cleared by memset `FUN_003F6CEC` on change.
-  Littleroot house: 11 models; Littleroot outdoors: 30 (no 0xAB).
-- Tried: appending a cloned descriptor for 0xAB (file index from the stub) and spawning →
-  character exists, render objects created, but **invisible**: the 3D data is preloaded by a
-  separate model-set system (`FUN_00402FCC` / wait `FUN_00402D54`, object at zone+0x2C, list
-  file 0xE4 entries of 0x2C) only for models in the map's list. Tier 3 of FUN_003F663C needs
-  manager+0x3C20 (only reader is 0x3F67FC; never set during plain map changes).
-- Plugin now uses the friend's model only if already resident on the map, else our own.
-- Next idea: add the model to the model-set list before `FUN_00402FCC` runs (hook map load),
-  or find the model-set loader's per-model request function.
+  (u16 model, 01 01 04 00 01 01 01 02 01 01, 0, 0, u32 file @+0x14), max 0x20.
+  List loader **`FUN_003F7728(manager, listFile)`**: state byte +0x36AA (0 = start: memset
+  table via FUN_003F6CEC, write both counts = size/24 + 1, async-read the list into slots 1..;
+  1 = poll). Littleroot house: 11 models; outdoors: 30.
+- **Key result**: models in this list get their 3D data loaded during the map load. A descriptor
+  appended mid-map spawns an invisible character; one appended right after the loader writes the
+  counts (state 0 → 1) loads normally — verified with a GDB write-watch (`mem.mjs append-model`)
+  and then with the plugin's MITM hook on FUN_003F7728: May (0xAB) visible + animated, from the
+  first load after boot and on every map change.
+- Variable models 0x7A–0x89 (`FUN_003F7578`): descriptor replaced by save var
+  (work+0x13140, index model+0x3FA6). **0x7A = rival**, in this save → file 0x13A = May
+  (verified visually). Resident wherever the story shows the rival (Littleroot). Plugin uses it
+  as a fallback for a May friend who joined mid-map.
+- Dead ends: `FUN_00402FCC`/`FUN_00402D88` = area/terrain loader, not characters; manager+0x3C20
+  (tier-3 "load allowed" flag) never set during map changes.
+
+### ✅ Camera / screen projection (2026-10-19)
+
+- Field camera object: word `0x00020003`, pointer, then a **4x4 row-major view-projection
+  matrix** (world x, height, map y, 1 → clip), eye at matrix+0x4C, target at +0x58.
+  Top screen: sx = 200·(1 + cx/cw), sy = 120·(1 − cy/cw). 30° vertical FOV.
+  Address varies per boot (seen 0x08286210, 0x082848C0); a stale copy can remain → validate
+  that the player's feet project on-screen. Littleroot: follow camera (feet at y 148);
+  house: fixed camera (eye 153,125,488 → target 153,30,284; feet at y 227).
+
+### Field state / intro hang (2026-10-19)
+
+- During the intro movie the save's field is already built: player object valid, move models
+  present, player mm+0x08 = 0x00000005. Calling the spawn function then **hangs the game**
+  (friend connected before Continue). In the running field mm+0x08 always has 0x4000
+  (0x4002/0x4006/0x4206/0x440F) → plugin gates everything on it.
+- Real running (B held): player anim **0x19**, 9 units per 67 ms (~134 units/s; walk ~77).
+  Indoors/without B: 0x10.
 
 DllField.cro: loaded at 0x006F3000 (header magic FIXD), code 0x006F3180+0x10EE80, name @0x00802000.
 Added to the Ghidra project as block "DllField" from a live dump (relocations already applied).

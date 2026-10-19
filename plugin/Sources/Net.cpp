@@ -161,9 +161,34 @@ void Apply(const Frame& f) {
             if (!std::isfinite(r.dirX) || !std::isfinite(r.dirY)) r.dirX = r.dirY = 0;
             r.anim = f.get<u8>(36);
             r.model = f.get<u16>(38);
-            if (mapChanged) { r.dx = r.tx; r.dz = r.tz; r.dy = r.ty; }
+            u64 now = osGetTime();
+            if (mapChanged) {
+                r.dx = r.tx; r.dz = r.tz; r.dy = r.ty;
+                r.histLen = 0; // don't interpolate across maps
+            }
+            // Interpolation history, stamped with the sender's clock (old clients send 0:
+            // use our receive time instead).
+            Sample smp;
+            smp.t = f.get<u32>(40);
+            if (!smp.t) smp.t = (u32)now;
+            smp.x = r.tx; smp.z = r.tz; smp.y = r.ty;
+            smp.dirX = r.dirX; smp.dirY = r.dirY;
+            bool inOrder = r.histLen == 0 || (s32)(smp.t - r.hist[r.histLen - 1].t) > 0;
+            if (inOrder) {
+                if (r.histLen == Remote::HISTORY) {
+                    for (int i = 1; i < Remote::HISTORY; i++) r.hist[i - 1] = r.hist[i];
+                    r.histLen--;
+                }
+                r.hist[r.histLen++] = smp;
+                // Smallest (local - sender) seen is the least-delayed packet; let it creep up
+                // 1 ms per packet so clock drift and route changes are absorbed.
+                s64 off = (s64)(u32)now - (s64)smp.t;
+                if (!r.haveOffset || off < r.clockOffset) r.clockOffset = off;
+                else r.clockOffset += 1;
+                r.haveOffset = true;
+            }
             r.hasState = true;
-            r.lastUpdate = osGetTime();
+            r.lastUpdate = now;
         }
         break;
     case T_CHAT:
@@ -198,6 +223,7 @@ Frame MakeState(const game::PlayerState& s, u32 seq) {
     f.put<float>(32, s.dirY);
     f.put<u8>(36, s.anim);
     f.put<u16>(38, s.model);
+    f.put<u32>(40, (u32)osGetTime()); // sender clock (ms) for receiver interpolation
     return f;
 }
 
@@ -227,17 +253,18 @@ void RunSession(const Config& cfg) {
 
     while (g_session.running) {
         std::string chat;
+        game::PlayerState s;
         {
             Guard g(g_session.lock);
             if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
             chat.swap(g_session.pendingChat);
+            s = g_session.local; // published by the game thread each frame
         }
 
         u64 now = osGetTime();
-        if (game::Locate()) {
-            game::PlayerState s = game::Read();
+        if (s.valid && s.inField) { // nothing meaningful to send from the title/intro
             u64 since = now - lastSend;
-            if (s.valid && ((Changed(s, last) && since >= STATE_INTERVAL_MS) || since >= IDLE_INTERVAL_MS)) {
+            if ((Changed(s, last) && since >= STATE_INTERVAL_MS) || since >= IDLE_INTERVAL_MS) {
                 if (!conn.Send(MakeState(s, ++seq))) break;
                 last = s;
                 lastSend = now;

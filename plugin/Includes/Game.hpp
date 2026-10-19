@@ -13,6 +13,10 @@ struct PlayerState {
     float dirX = 0, dirY = 0;  // facing unit vector from the move model (0,0 if unknown)
     u8 anim = 0;               // player move model's animation id (mm+0x58; 0 idle, 0x10 walk)
     u16 model = 0;             // player model id (0xAC Brendan, 0xAB May; 0 if unknown)
+    // The field is live and running (not title/intro/loading): the player's character exists
+    // and its flags have 0x4000. During the intro the save's field is already built with the
+    // player flagged 0x5; calling game functions on it then hangs the game (verified).
+    bool inField = false;
 };
 
 // Finds the player object (known address first, then a heap scan for its vtable).
@@ -68,8 +72,20 @@ bool DespawnCharacter(u32 mm, u16 id);
 // (FUN_003FB1B4(mm, code, dir) → DllField FUN_0072D128). code <= 0x103; dir 9 = keep facing.
 bool SetAction(u32 mm, u16 code, u8 dir);
 
+// True if `mm` is an in-use character slot holding object id `id`.
+bool SlotHasId(u32 mm, u16 id);
+
 // Finds an in-use character by object id. Returns its address or 0.
 u32 FindCharacter(u16 id);
+
+// Projects a world point (x, height z, map y) to top-screen pixels with the game's own
+// camera (view-projection matrix at a fixed heap address, validated on every call). Returns
+// false if the camera isn't there (battle, menus) or the point is behind it. sx/sy may be
+// off-screen.
+bool ProjectToTop(float x, float z, float y, float& sx, float& sy);
+
+// True while the field is live (see PlayerState::inField).
+bool PlayerFieldActive();
 
 // Reads the local player's model id (0 if unknown).
 u16 PlayerModel();
@@ -78,6 +94,18 @@ u16 PlayerModel();
 constexpr u16 MODEL_BRENDAN = 0xAC;
 constexpr u16 MODEL_MAY = 0xAB;
 inline bool IsPlayerModel(u16 m) { return m == MODEL_BRENDAN || m == MODEL_MAY; }
+
+// Friends' trainer models (Models.cpp): hooks the map loader so the player models friends use
+// are added to every map's resident list as it loads (their 3D data then loads normally).
+bool InstallModelHook();
+void SetWantedModels(bool may, bool brendan);
+
+// Rival placeholder model: 0x7A is a "variable" model the story points at the rival, i.e. May
+// for a Brendan player (archive file 0x13A, verified); resident on maps where the rival appears.
+constexpr u16 MODEL_RIVAL = 0x7A;
+constexpr u32 RIVAL_MAY_FILE = 0x13A;
+// True if the rival placeholder is resident on this map and currently resolves to May.
+bool RivalIsMay();
 
 // True if `model` is in the current map's resident model table, i.e. the game preloaded its
 // 3D data for this map, so SpawnCharacter can use it.

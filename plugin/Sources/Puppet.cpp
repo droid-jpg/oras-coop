@@ -46,6 +46,17 @@ u16 CharId(int remoteId) { return (u16)(ID_BASE + remoteId); }
 
 void Forget(Spawned& s) { s = Spawned(); }
 
+// The friend's own trainer when this map has it loaded (added by the model hook at map load),
+// else May via the rival placeholder where the story loaded her, else our own model (always
+// loaded). A friend who joins mid-map gets their own model from the next map change on.
+u16 PickModel(u16 theirs) {
+    u16 mine = game::PlayerModel();
+    if (!mine || !game::IsPlayerModel(theirs) || theirs == mine) return mine;
+    if (game::IsModelResident(theirs)) return theirs;
+    if (theirs == game::MODEL_MAY && game::RivalIsMay()) return game::MODEL_RIVAL;
+    return mine;
+}
+
 // Walk/run clip while the display position is moving, idle otherwise. The sender's own id
 // drops to 0 for a frame between steps, so remember the last locomotion clip.
 u8 PickAnim(Spawned& s, const Remote& r, u64 now) {
@@ -83,11 +94,28 @@ void Despawn(int id, Spawned& s, u16 currentMap) {
 
 void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId) {
     u64 now = osGetTime();
-    if (!me.valid) {
-        // Title screen, battle, or loading: the game owns the characters right now.
-        for (auto& s : s_spawned) Forget(s);
-        s_lastMap = 0xFFFF;
+    // Ask the map loader (Models.cpp) to load the trainer models our friends use, so they are
+    // there by the next map change, wherever we go.
+    // Kept as-is while our own model is unknown (loading), which is exactly when it's used.
+    if (me.model) {
+        bool may = false, brendan = false;
+        for (int id = 1; enabled && id <= MAX_ID; id++) {
+            const Remote& r = remotes[id];
+            if (id == myId || !r.active || r.model == me.model) continue;
+            may |= r.model == game::MODEL_MAY;
+            brendan |= r.model == game::MODEL_BRENDAN;
+        }
+        game::SetWantedModels(may, brendan);
+    }
+    if (!me.valid || !me.inField) {
+        // Title, intro, battle or loading: don't touch the field. Our characters are kept
+        // track of; if the game deleted them meanwhile, the id check below notices.
+        s_mapSince = now; // and give the field a moment once it's back
         return;
+    }
+    for (int id = 1; id <= MAX_ID; id++) {
+        Spawned& s = s_spawned[id];
+        if (s.active && !game::SlotHasId(s.mm, CharId(id))) Forget(s); // deleted or reused
     }
     if (me.map != s_lastMap) {
         s_lastMap = me.map;
@@ -108,12 +136,8 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         }
         if (!s.active) {
             if (!settled) continue;
-            // The friend's own trainer (Brendan/May) when this map has it loaded, else our own
-            // model, which is always loaded.
-            u16 model = game::PlayerModel();
+            u16 model = PickModel(r.model);
             if (!model) continue;
-            if (game::IsPlayerModel(r.model) && r.model != model && game::IsModelResident(r.model))
-                model = r.model;
             u16 tx = (u16)std::max(0.0f, r.dx / 18.0f), ty = (u16)std::max(0.0f, r.dy / 18.0f);
             u32 mm = game::SpawnCharacter(CharId(id), model, tx, ty);
             if (!mm) continue; // no free slot on this map

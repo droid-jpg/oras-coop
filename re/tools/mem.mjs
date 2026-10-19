@@ -177,6 +177,35 @@ try {
       }
       await g.cmd(`z0,${addr.toString(16)},4`);
     }
+  } else if (mode === 'append-model') {
+    // Experiment: when the map loader writes the resident-model count (manager+0x36C4, the
+    // second of its two count writes), append a descriptor for <model> (archive file <file>)
+    // and bump both counts, before the models load.
+    // append-model <manager> <model> <file> [timeoutMs=60000]
+    const mgr = num(args[0]), model = num(args[1]), file = num(args[2]);
+    const timeout = Number(args[3] ?? 60000);
+    const c4 = mgr + 0x36c4, c8 = mgr + 0x36c8, table = mgr + 0x36cc;
+    await g.cmd(`Z2,${c4.toString(16)},4`);
+    const before = (await g.read(c4, 4)).readUInt32LE(0);
+    for (;;) {
+      const cont = g.cmd('c');
+      const stop = await Promise.race([cont, new Promise((r) => setTimeout(() => r(null), timeout))]);
+      if (stop === null) { g.sock.write('\x03'); await cont; console.log('no map load seen'); break; }
+      const n = (await g.read(c4, 4)).readUInt32LE(0);
+      if (n === before || n === 0) continue; // a read or the clear; wait for the new count
+      const slot0 = await g.read(table, 0x18);
+      const d = Buffer.from(slot0);
+      d.writeUInt16LE(model, 0);
+      d.writeUInt32LE(file, 0x14);
+      const at = table + n * 0x18;
+      await g.cmd(`M${at.toString(16)},18:${d.toString('hex')}`);
+      const cnt = Buffer.alloc(4); cnt.writeUInt32LE(n + 1);
+      await g.cmd(`M${c4.toString(16)},4:${cnt.toString('hex')}`);
+      await g.cmd(`M${c8.toString(16)},4:${cnt.toString('hex')}`);
+      console.log(`count ${n} -> ${n + 1}, model 0x${model.toString(16)} at ${at.toString(16)}`);
+      break;
+    }
+    await g.cmd(`z2,${c4.toString(16)},4`);
   } else if (mode === 'catch-write') {
     // Pause the game when <addr> is written; report PC/LR of the writer. Repeats <hits> times.
     // catch-write <addr> [hits=3] [timeoutMs=4000]

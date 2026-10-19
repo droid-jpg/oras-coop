@@ -4,6 +4,7 @@
 #include <CTRPluginFramework.hpp>
 #include <string>
 #include "Protocol.hpp"
+#include "Game.hpp"
 
 namespace coop {
 
@@ -20,7 +21,20 @@ struct Config {
     void Save() const;
 };
 
+// One received STATE, stamped with the sender's clock (ms) for interpolation.
+struct Sample {
+    u32 t = 0;
+    float x = 0, z = 0, y = 0;
+    float dirX = 0, dirY = 0;
+};
+
 struct Remote {
+    static constexpr int HISTORY = 8;
+    Sample hist[HISTORY];         // oldest first
+    int histLen = 0;
+    s64 clockOffset = 0;          // local ms - sender ms (smallest seen, i.e. least delayed)
+    bool haveOffset = false;
+
     bool active = false;
     bool hasState = false;
     char name[16] = {0};
@@ -47,6 +61,9 @@ struct Session {
     std::string lastChat;        // shown on screen
     u64 lastChatTime = 0;
     bool reconnect = false;      // menu asks net thread to reconnect
+    // Local player state, read from game memory by the game thread (overlay) each frame and
+    // published here; the net thread only reads this copy, never game memory.
+    game::PlayerState local;
     volatile bool running = true;
 };
 

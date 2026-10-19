@@ -48,7 +48,7 @@ sock.on('data', (d) => {
       case T.JOIN: names[id] = cstr(f, 4, 16); console.log(`join #${id} ${names[id]}`); break;
       case T.LEAVE: console.log(`leave #${id} ${names[id] ?? ''}`); break;
       case T.STATE:
-        if (opt.listen) console.log(`state #${id} ${names[id] ?? ''} map=${f.readUInt16LE(4)} facing=${f.readUInt16LE(6)} x=${f.readFloatLE(8).toFixed(2)} y=${f.readFloatLE(16).toFixed(2)}`);
+        if (opt.listen) console.log(`state #${id} ${names[id] ?? ''} map=${f.readUInt16LE(4)} facing=${f.readUInt16LE(6)} x=${f.readFloatLE(8).toFixed(2)} y=${f.readFloatLE(16).toFixed(2)} anim=0x${f[36].toString(16)} model=0x${f.readUInt16LE(38).toString(16)} t=${f.readUInt32LE(40)}`);
         break;
       case T.CHAT: console.log(`chat #${id} ${names[id] ?? ''}: ${cstr(f, 4, 40)}`); break;
       case T.ERROR: console.log(`error code ${f[4]}`); break;
@@ -79,6 +79,7 @@ setInterval(() => {
   s.writeFloatLE(dir[0], 28); s.writeFloatLE(dir[1], 32);
   s.writeUInt8(moving && opt.radius > 0 ? opt.anim : 0, 36);
   s.writeUInt16LE(opt.model, 38);
+  s.writeUInt32LE(Date.now() >>> 0, 40); // sender clock (ms), lets receivers interpolate
   sock.write(s);
 }, 66);
 

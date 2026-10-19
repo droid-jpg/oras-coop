@@ -232,6 +232,9 @@ int main() {
     *display += new MenuEntry("Debug: action on test character", nullptr, MenuActionTest);
     *menu += display;
 
+    // Lets friends appear as their own trainer (Brendan/May); see Models.cpp.
+    game::InstallModelHook();
+
     OSD::Run(coop::OverlayCallback);
 
     Thread net = threadCreate(coop::NetThread, nullptr, 0x8000, 0x30, -2, false);

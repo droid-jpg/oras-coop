@@ -38,29 +38,35 @@ static bool LooksLikePlayer(u32 addr) {
     return true;
 }
 
-constexpr u64 RESCAN_MS = 2000; // full heap scans are slow; don't repeat them every frame
+// Heap scans are spread over frames: a few pages per call, resuming where the last call
+// stopped, so a lost object (battle, title screen, loading) never stalls a frame.
+// The whole 16 MB range takes SCAN_END-SCAN_START / (PAGE*SCAN_PAGES) calls (~2 s at 30 fps).
+constexpr u32 SCAN_PAGES = 64;
 
-bool Locate() {
-    static u64 lastScan = 0;
-    if (s_obj && LooksLikePlayer(s_obj)) return true;
-    if (LooksLikePlayer(KNOWN_ADDR)) { s_obj = KNOWN_ADDR; return true; }
-    if (osGetTime() - lastScan < RESCAN_MS) return false;
-    lastScan = osGetTime();
-
-    // Fall back to scanning the heap. The plugin runs inside the game process,
-    // so mapped pages can be read directly; unmapped pages are skipped.
-    for (u32 page = SCAN_START; page < SCAN_END; page += PAGE) {
-        if (!Process::CheckAddress(page)) continue;
-        const volatile u32* p = reinterpret_cast<const volatile u32*>(page);
-        for (u32 i = 0; i < PAGE / 4; i++) {
-            if (p[i] == PLAYER_VTABLE && LooksLikePlayer(page + i * 4)) {
-                s_obj = page + i * 4;
-                return true;
+struct Scanner {
+    u32 next = SCAN_START;
+    // Returns the first address in this call's slice whose word is `value` and passes `ok`.
+    template <typename Ok> u32 Step(u32 value, Ok ok) {
+        for (u32 n = 0; n < SCAN_PAGES; n++) {
+            u32 page = next;
+            next = next + PAGE >= SCAN_END ? SCAN_START : next + PAGE;
+            if (!Process::CheckAddress(page)) continue;
+            // The plugin runs inside the game process, so mapped pages can be read directly.
+            const volatile u32* p = reinterpret_cast<const volatile u32*>(page);
+            for (u32 i = 0; i < PAGE / 4; i++) {
+                if (p[i] == value && ok(page + i * 4)) return page + i * 4;
             }
         }
+        return 0;
     }
-    s_obj = 0;
-    return false;
+};
+
+bool Locate() {
+    static Scanner scan;
+    if (s_obj && LooksLikePlayer(s_obj)) return true;
+    if (LooksLikePlayer(KNOWN_ADDR)) { s_obj = KNOWN_ADDR; return true; }
+    s_obj = scan.Step(PLAYER_VTABLE, LooksLikePlayer);
+    return s_obj != 0;
 }
 
 PlayerState Read() {
@@ -75,10 +81,70 @@ PlayerState Read() {
     s.valid = true;
     ReadPlayerDir(s.dirX, s.dirY, &s.anim);
     s.model = PlayerModel();
+    s.inField = s.model && PlayerFieldActive();
     return s;
 }
 
 u32 ObjectAddress() { return s_obj; }
+
+// ---- Camera ----
+// The field camera keeps a 4x4 row-major view-projection matrix (world x, height, map y, 1 ->
+// clip). Row 3 is the negated view direction plus offset, so clip.w is the depth in front of
+// the camera; top screen: sx = 200 * (1 + x/w), sy = 120 * (1 - y/w). Verified: projects the
+// player's feet to (200, 148) in Littleroot and (200, 227) in the house (fixed camera);
+// 30° vertical FOV. The camera object moves between boots; the matrix is always preceded by
+// the word 0x00020003 and a pointer, then eye (+0x4C) and target (+0x58) follow it.
+constexpr u32 CAMERA_TAG = 0x00020003;
+constexpr u32 CAMERA_TAG_TO_MATRIX = 8;
+constexpr float TOP_HALF_W = 200.0f, TOP_HALF_H = 120.0f;
+
+static bool ReadMatrix(u32 a, float* m) {
+    for (int i = 0; i < 16; i++) {
+        if (!Process::ReadFloat(a + i * 4, m[i]) || !std::isfinite(m[i])) return false;
+    }
+    // Row 3 xyz is a unit vector (view direction); rows 0/1 carry the projection scale
+    // (|row0 xyz| = |row1 xyz| * 240/400 for the top screen's aspect).
+    float r3 = m[12] * m[12] + m[13] * m[13] + m[14] * m[14];
+    float r0 = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+    float r1 = std::sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+    return std::fabs(r3 - 1.0f) < 0.02f && r0 > 0.3f && r0 < 20.0f && std::fabs(r0 - r1 * 0.6f) < 0.05f * r0;
+}
+
+static bool Project(const float* m, float x, float z, float y, float& sx, float& sy) {
+    float cx = m[0] * x + m[1] * z + m[2] * y + m[3];
+    float cy = m[4] * x + m[5] * z + m[6] * y + m[7];
+    float cw = m[12] * x + m[13] * z + m[14] * y + m[15];
+    if (cw < 1.0f) return false; // behind or at the camera
+    sx = TOP_HALF_W * (1.0f + cx / cw);
+    sy = TOP_HALF_H * (1.0f - cy / cw);
+    return true;
+}
+
+// The live camera shows our own player; a stale camera from another map usually doesn't.
+static bool SeesPlayer(const float* m) {
+    float px, pz, py, sx, sy;
+    if (!s_obj || !Process::ReadFloat(s_obj + OFF_X, px) || !Process::ReadFloat(s_obj + OFF_Z, pz) ||
+        !Process::ReadFloat(s_obj + OFF_Y, py))
+        return false;
+    return Project(m, px, pz, py, sx, sy) && sx >= 0 && sx <= 2 * TOP_HALF_W && sy >= 0 && sy <= 2 * TOP_HALF_H;
+}
+
+static bool IsCameraTag(u32 a) {
+    float m[16];
+    return ReadMatrix(a + CAMERA_TAG_TO_MATRIX, m) && SeesPlayer(m);
+}
+
+bool ProjectToTop(float x, float z, float y, float& sx, float& sy) {
+    static u32 cam = 0; // matrix address
+    static Scanner scan;
+    float m[16];
+    if (!cam || !ReadMatrix(cam, m) || !SeesPlayer(m)) {
+        u32 tag = scan.Step(CAMERA_TAG, IsCameraTag);
+        cam = tag ? tag + CAMERA_TAG_TO_MATRIX : 0;
+        if (!cam || !ReadMatrix(cam, m)) return false;
+    }
+    return Project(m, x, z, y, sx, sy);
+}
 
 // ---- Move models ----
 // Array of 32 slots, 0xAB0 apart, each starting with vtable 0x005DF560 (verified AS 1.4).
@@ -111,25 +177,17 @@ static bool IsSlot(u32 addr) {
     return Process::Read32(addr, vt) && vt == MM_VTABLE;
 }
 
+// The first slot is the one whose predecessor isn't a slot.
+static bool IsFirstSlot(u32 a) { return IsSlot(a + MM_STRIDE) && !IsSlot(a - MM_STRIDE); }
+
 bool LocateMoveModels() {
-    static u64 lastScan = 0;
+    static Scanner scan;
+    static u32 lastGood = 0; // the array is usually reallocated at the same address
     if (s_mmBase && IsSlot(s_mmBase) && IsSlot(s_mmBase + MM_STRIDE)) return true;
-    s_mmBase = 0;
-    if (osGetTime() - lastScan < RESCAN_MS) return false;
-    lastScan = osGetTime();
-    for (u32 page = SCAN_START; page < SCAN_END; page += PAGE) {
-        if (!Process::CheckAddress(page)) continue;
-        const volatile u32* p = reinterpret_cast<const volatile u32*>(page);
-        for (u32 i = 0; i < PAGE / 4; i++) {
-            u32 a = page + i * 4;
-            // The first slot is the one whose predecessor isn't a slot.
-            if (p[i] == MM_VTABLE && IsSlot(a + MM_STRIDE) && !IsSlot(a - MM_STRIDE)) {
-                s_mmBase = a;
-                return true;
-            }
-        }
-    }
-    return false;
+    if (lastGood && IsSlot(lastGood) && IsFirstSlot(lastGood)) { s_mmBase = lastGood; return true; }
+    s_mmBase = scan.Step(MM_VTABLE, IsFirstSlot);
+    if (s_mmBase) lastGood = s_mmBase;
+    return s_mmBase != 0;
 }
 
 static bool ReadSlot(u32 a, MoveModel& m) {
@@ -155,18 +213,30 @@ int ListMoveModels(MoveModel* out, int max) {
     return n;
 }
 
-bool ReadPlayerDir(float& dirX, float& dirY, u8* anim) {
-    if (!LocateMoveModels()) return false;
+// The player's move model; cached because it is needed every frame and rarely moves.
+static u32 FindPlayerSlot() {
+    static u32 cached = 0;
+    if (!LocateMoveModels()) return 0;
+    u16 id = 0;
+    u32 flags4 = 0;
+    if (cached && IsSlot(cached) && Process::Read32(cached + MM_FLAGS4, flags4) && (flags4 & 1) &&
+        Process::Read16(cached + MM_ID, id) && id == PLAYER_MM_ID)
+        return cached;
+    cached = 0;
     for (int i = 0; i < MOVE_MODEL_SLOTS; i++) {
         MoveModel m;
-        if (ReadSlot(s_mmBase + i * MM_STRIDE, m) && m.id == PLAYER_MM_ID) {
-            dirX = m.dirX;
-            dirY = m.dirY;
-            if (anim) Process::Read8(m.addr + MM_ANIM, *anim);
-            return true;
-        }
+        if (ReadSlot(s_mmBase + i * MM_STRIDE, m) && m.id == PLAYER_MM_ID) return cached = m.addr;
     }
-    return false;
+    return 0;
+}
+
+bool ReadPlayerDir(float& dirX, float& dirY, u8* anim) {
+    u32 a = FindPlayerSlot();
+    if (!a) return false;
+    Process::ReadFloat(a + MM_COS[0], dirX);
+    Process::ReadFloat(a + MM_SIN[0], dirY);
+    if (anim) Process::Read8(a + MM_ANIM, *anim);
+    return true;
 }
 
 bool Puppet(u32 a, float x, float z, float y, float dirX, float dirY) {
@@ -215,16 +285,15 @@ bool SetAnim(u32 a, u8 anim) {
 // [0x14] tile x, [0x15] tile y). Asserts (crashes) if no slot is free — always check first.
 
 constexpr u32 FN_SPAWN = 0x003F584C;
+constexpr int SPARE_SLOTS = 4;     // free slots kept for the game (scripts spawn NPCs mid-map)
 constexpr u32 MM_MANAGER = 0x8B4;  // move model -> manager (used by the model registry)
 constexpr u32 MM_ZONE = 0x0E;
 
-static u32 FindPlayerSlot() {
-    if (!LocateMoveModels()) return 0;
-    for (int i = 0; i < MOVE_MODEL_SLOTS; i++) {
-        MoveModel m;
-        if (ReadSlot(s_mmBase + i * MM_STRIDE, m) && m.id == PLAYER_MM_ID) return m.addr;
-    }
-    return 0;
+constexpr u32 FIELD_ACTIVE = 0x4000; // player mm+0x08 while the field runs (0x5 in the intro)
+
+bool PlayerFieldActive() {
+    u32 p = FindPlayerSlot(), flags8 = 0;
+    return p && Process::Read32(p + MM_FLAGS8, flags8) && (flags8 & FIELD_ACTIVE);
 }
 
 u16 PlayerModel() {
@@ -243,17 +312,26 @@ constexpr u32 RES_TABLE = 0x36CC;
 constexpr u32 RES_SIZE  = 0x18;
 constexpr u32 RES_MAX   = 0x20;
 
-bool IsModelResident(u16 model) {
+// Address of `model`'s descriptor in the current map's resident table, or 0.
+static u32 FindResident(u16 model) {
     u32 player = FindPlayerSlot();
     u32 manager = 0;
-    if (!player || !Process::Read32(player + MM_MANAGER, manager) || manager < 0x08000000) return false;
+    if (!player || !Process::Read32(player + MM_MANAGER, manager) || manager < 0x08000000) return 0;
     u32 count = 0;
-    if (!Process::Read32(manager + RES_COUNT, count) || count == 0 || count > RES_MAX) return false;
+    if (!Process::Read32(manager + RES_COUNT, count) || count == 0 || count > RES_MAX) return 0;
     for (u32 i = 0; i < count; i++) {
         u16 m = 0;
-        if (Process::Read16(manager + RES_TABLE + i * RES_SIZE, m) && m == model) return true;
+        u32 d = manager + RES_TABLE + i * RES_SIZE;
+        if (Process::Read16(d, m) && m == model) return d;
     }
-    return false;
+    return 0;
+}
+
+bool IsModelResident(u16 model) { return FindResident(model) != 0; }
+
+bool RivalIsMay() {
+    u32 d = FindResident(MODEL_RIVAL), file = 0;
+    return d && Process::Read32(d + 0x14, file) && file == RIVAL_MAY_FILE;
 }
 
 u32 SpawnCharacter(u16 id, u16 model, u16 tileX, u16 tileY) {
@@ -265,7 +343,7 @@ u32 SpawnCharacter(u16 id, u16 model, u16 tileX, u16 tileY) {
         u32 flags4 = 0;
         if (Process::Read32(s_mmBase + i * MM_STRIDE + MM_FLAGS4, flags4) && (flags4 & 1)) used++;
     }
-    if (used >= MOVE_MODEL_SLOTS - 1) return 0; // keep one slot spare for the game
+    if (used >= MOVE_MODEL_SLOTS - SPARE_SLOTS) return 0; // leave room for cutscene/script NPCs
 
     u32 manager = 0;
     u16 zone = 0;
@@ -311,6 +389,11 @@ bool SetAction(u32 mm, u16 code, u8 dir) {
     using SetActionFn = void (*)(u32 mm, u32 code, u32 dir);
     reinterpret_cast<SetActionFn>(FN_SET_ACTION)(mm, code, dir);
     return true;
+}
+
+bool SlotHasId(u32 mm, u16 id) {
+    MoveModel m;
+    return ReadSlot(mm, m) && m.id == id;
 }
 
 u32 FindCharacter(u16 id) {

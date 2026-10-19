@@ -13,7 +13,8 @@ namespace coop {
 namespace {
 
 constexpr int TOP_W = 400, TOP_H = 240, BOT_W = 320, BOT_H = 240;
-constexpr int PLAYER_SX = 200, PLAYER_SY = 135; // where our character sits on the top screen
+constexpr int PLAYER_SX = 200, PLAYER_SY = 148; // fallback: where our character's feet sit
+constexpr float HEAD_HEIGHT = 30.0f;            // world units from feet to just above the head
 constexpr float TILE = 18.0f;
 constexpr float RADAR_RANGE = 20.0f * TILE;     // world units from centre to radar edge
 constexpr u64 STALE_MS = 5000;
@@ -63,22 +64,61 @@ struct View {
     bool puppets;
 };
 
+// Remote players are shown INTERP_DELAY_MS in the past, between the two received states
+// around that moment, so movement keeps a constant speed despite 15 Hz updates and jitter.
+// Must exceed the sender's update interval (66 ms) plus typical jitter.
+constexpr u32 INTERP_DELAY_MS = 120;
+
+void Interpolate(Remote& r, u64 now, float& dirX, float& dirY) {
+    if (r.histLen == 0 || !r.haveOffset) {
+        r.dx = r.tx; r.dz = r.tz; r.dy = r.ty;
+        return;
+    }
+    u32 t = (u32)((s64)(u32)now - r.clockOffset) - INTERP_DELAY_MS; // in sender ms
+    const Sample* a = &r.hist[0];
+    const Sample* b = nullptr;
+    for (int k = 1; k < r.histLen; k++) {
+        if ((s32)(r.hist[k].t - t) >= 0) { b = &r.hist[k]; break; }
+        a = &r.hist[k];
+    }
+    if (!b || (s32)(t - a->t) < 0) {
+        // Past the newest state (late packet or standing still) or before the oldest: hold.
+        // No extrapolation — overshooting and snapping back looks worse than a short pause.
+        r.dx = a->x; r.dz = a->z; r.dy = a->y;
+        dirX = a->dirX; dirY = a->dirY;
+        return;
+    }
+    float span = (float)(s32)(b->t - a->t);
+    float u = span > 0 ? (float)(s32)(t - a->t) / span : 1.0f;
+    if (std::fabs(b->x - a->x) > 10 * TILE || std::fabs(b->y - a->y) > 10 * TILE) u = 1.0f; // warp
+    r.dx = a->x + (b->x - a->x) * u;
+    r.dz = a->z + (b->z - a->z) * u;
+    r.dy = a->y + (b->y - a->y) * u;
+    // Facing: blend the vectors (renormalised by Puppet); fall back if one is unknown.
+    if ((a->dirX || a->dirY) && (b->dirX || b->dirY)) {
+        dirX = a->dirX + (b->dirX - a->dirX) * u;
+        dirY = a->dirY + (b->dirY - a->dirY) * u;
+        if (dirX * dirX + dirY * dirY < 1e-4f) { dirX = b->dirX; dirY = b->dirY; } // 180° turn
+    } else {
+        dirX = b->dirX; dirY = b->dirY;
+    }
+}
+
 // Copies shared state and advances smoothing; done once per top-screen frame.
 View Snapshot() {
     View v;
+    game::Locate(); // cheap when found; otherwise scans a small slice of the heap
     v.me = game::Read();
     g_session.lock.Lock();
+    g_session.local = v.me;
+    u64 now = osGetTime();
     for (int i = 0; i <= MAX_ID; i++) {
         Remote& r = g_session.remotes[i];
-        if (r.hasState) {
-            float ddx = r.tx - r.dx, ddy = r.ty - r.dy, ddz = r.tz - r.dz;
-            if (std::fabs(ddx) > 10 * TILE || std::fabs(ddy) > 10 * TILE) {
-                r.dx = r.tx; r.dy = r.ty; r.dz = r.tz; // teleport/warp: snap
-            } else {
-                r.dx += ddx * 0.25f; r.dy += ddy * 0.25f; r.dz += ddz * 0.25f;
-            }
-        }
+        float dirX = r.dirX, dirY = r.dirY;
+        if (r.hasState) Interpolate(r, now, dirX, dirY);
         v.remotes[i] = r;
+        v.remotes[i].dirX = dirX; // display facing; the shared copy keeps the latest received
+        v.remotes[i].dirY = dirY;
     }
     v.myId = g_session.myId;
     v.status = g_session.status;
@@ -97,7 +137,7 @@ View Snapshot() {
 View g_view;
 
 bool Visible(const Remote& r, const game::PlayerState& me) {
-    return r.active && r.hasState && me.valid && r.map == me.map && osGetTime() - r.lastUpdate < STALE_MS;
+    return r.active && r.hasState && me.valid && me.inField && r.map == me.map && osGetTime() - r.lastUpdate < STALE_MS;
 }
 
 void DrawStatus(const Screen& s, const View& v) {
@@ -110,10 +150,18 @@ void DrawStatus(const Screen& s, const View& v) {
 }
 
 void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
-    float dx = (r.dx - v.me.x) * v.scale;
-    float dy = (r.dy - v.me.y) * v.scale;
-    int sx = PLAYER_SX + (int)dx;
-    int sy = PLAYER_SY + (int)dy;
+    // Feet and head through the game's camera; the flat scale is only a fallback.
+    float fx, fy, hx, hy;
+    int sx, sy, labelY;
+    if (game::ProjectToTop(r.dx, r.dz, r.dy, fx, fy) && game::ProjectToTop(r.dx, r.dz + HEAD_HEIGHT, r.dy, hx, hy)) {
+        sx = (int)(fx + 0.5f);
+        sy = (int)(fy + 0.5f);
+        labelY = (int)(hy + 0.5f) - 14;
+    } else {
+        sx = PLAYER_SX + (int)((r.dx - v.me.x) * v.scale);
+        sy = PLAYER_SY + (int)((r.dy - v.me.y) * v.scale);
+        labelY = sy - 36;
+    }
     const Color& col = kPlayerColors[id];
     std::string label = r.name;
 
@@ -126,8 +174,8 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
             Rect(s, sx - 4, sy - 22, 8, 21, Color::Black, false);
         }
         int lw = TextWidth(label) + 6;
-        Rect(s, sx - lw / 2, sy - 36, lw, 12, kBg);
-        Text(s, label, sx - lw / 2 + 3, sy - 35, col);
+        Rect(s, sx - lw / 2, labelY, lw, 12, kBg);
+        Text(s, label, sx - lw / 2 + 3, labelY + 1, col);
     } else {
         // Edge arrow pointing toward an off-screen player, with distance in tiles.
         int ex = (int)Clampf((float)sx, 6, TOP_W - 7);
