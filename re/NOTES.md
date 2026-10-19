@@ -354,3 +354,33 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
 - Two Azahar instances both bind GDB 24689 (SO_REUSEADDR) and connections alternate between them.
   Give the second its own port: `gdbstub_port\default=false` + `gdbstub_port=24690` before launch
   (with `default=true` the value is ignored).
+
+### Field scripts and the game's own text box (2026-10-19)
+
+- Field dialogue runs as **AMX (Pawn) scripts**: header magic 0xF1E0, file/VM version 10, flags 0x1C
+  (0x4 = compact encoding, expanded by amx_Init `FUN_00505DB4`), defsize 8, natives imported by
+  **name hash** `h = c ^ (h * 0x83)` (lookup `FUN_00505B04`). Interpreter `FUN_00503508`, jump
+  table `*(0x0050468C)` by `op & 0xFFFF`; verifier `FUN_001D3630`. Opcodes used: 0x27 PUSH.C imm,
+  0x2E PROC, 0x30 RETN, 0x33 JUMP rel, 0x35 JZER rel (relative to the opcode's address), 0x59/0x5A
+  ZERO.pri/alt, 0x78 HALT imm (12 = sleep: resume next frame), 0x87 SYSREQ.N idx bytes,
+  0xBC/0xBE packed PUSH.C/PUSH.S (operand in the high 16 bits), 0xD2 packed HALT.
+- Native tables: DllField `0x7EA58C` = {name*, func} pairs (332). Message natives:
+  TalkMdlMsg_Seq `0x747308` (19 args; the Surf check passes line, 0, -1, 0xB, 0, 0xAA, 0×10, -1, 0, 0),
+  CheckWinAllSuspend `0x74B4FC`, LastKeyWait `0x744EF4`, MsgWinCloseNo `0x746458`, _Suspend
+  (code.bin) = wait N frames, followed in scripts by ZERO.pri, ZERO.alt, HALT 12.
+- **Run a script**: `FUN_003DC114(field, scriptId, target, p4..p7)` → event + request
+  (`FUN_003FE85C` → `FUN_003FEB40` → `FUN_003FE7C0`). `FUN_003FB594(req+0x24, zone, id, x)`
+  resolves the id: global ranges table `0x587694` (0x56 × 16 bytes: u16 min, max, file, heap, msg
+  file) → common script file (e.g. 10050..10089 → file 0x2E Surf/field checks, msg file 254, native
+  mask 0x643); other ids > 0 → the zone's script. g_mode = id; main() switches on it.
+- Script manager `*(0x005F46FC)` = `*(field+0x54)`, field = `*(0x0062F7C4)`. +0x24 file container
+  (u16 count, entries {code, size, u16 id; 0xFFFF free}), +0x28 pool (3 script objects, stack),
+  +0x34 current script (0 = none). The loader `FUN_003AB0C8` copies the file (stp bytes) and runs
+  amx_Init; the container buffer is then freed by `FUN_003FDD44` (game-heap free via header at -0x20).
+- **Hang**: pressing A at a spawned friend runs its NPC script id **0**: unresolved request,
+  file 0xFFFF, "loaded" without an AMX → `FUN_003AB254` loops on amx_Exec error 0x16 forever.
+- Plugin (`Talk.cpp`): builds a 5-native AMX image, puts it in a free container slot as file 0x3F0,
+  hooks FUN_003DC114 (id 0 + target = friend trainer → our id 32700) and FUN_003FB594 (our id →
+  the 10050 request, file 0x3F0). Text: DllField's GetString import stub `0x006F32B8` is pointed at
+  our function, which fills line 0x7FF0. (A CTRPF MITM hook on GetString itself crashed: worker
+  threads call it and get no hook context.)

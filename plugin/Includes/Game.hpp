@@ -138,6 +138,17 @@ bool RivalIsMay();
 // 3D data for this map, so SpawnCharacter can use it.
 bool IsModelResident(u16 model);
 
+// The game's own field text box (Talk.cpp): runs a tiny script of ours through the game's
+// script system, so the text shows exactly like an NPC's line and the player waits for A/B.
+// textFn gives the line a friend's trainer says when the player talks to it (A in front of it;
+// charId = its character id, 0xE1..0xE8), from the game thread.
+using TalkTextFn = bool (*)(u16 charId, char* out, int len);
+bool InstallTalkHooks(TalkTextFn textFn);
+// 1 = started; 0 = the game is busy (another script / loading), try again later; < 0 = can't here.
+int ShowGameMessage(const char* text);
+// True while any field script runs (ours included).
+bool GameScriptRunning();
+
 // Writes the place name the game shows for `zone` (the map id in PlayerState), e.g. "Route 109";
 // buildings give their town's name. Read from the game's own place-name text (Places.cpp).
 // Returns false while that text isn't found yet (it is searched for a few pages per call).

@@ -26,16 +26,11 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Map names | ✅ player list shows where friends are ("Slateport City", "Route 109"), read from the game's own place-name text |
 | Game menus and text boxes | ✅ the overlay steps aside while the X menu or a game text box is open (player mm+0x08 bits 0x8 / 0x02000000) |
 | Doors and map edges | ✅ a friend leaving your map leaves a fading "Name -> Place" note where they left; arriving shows "Name arrived" |
-| Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting) opens in a game-style text box, their trainer turns to you, and they get "Name is talking to you!". Drawn by the plugin, not the game's own window yet |
+| Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting) opens in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
 
 ## Known bugs (found playing over Tailscale, 2026-10-19)
 
-1. **Talking to a friend crashes the game of the player who pressed A.** The friend's game is fine.
-   Not investigated yet. Suspect (unverified): with Real models on, the game also sees the A
-   press on the spawned trainer and runs its own NPC-talk path on a puppet that has no valid
-   script/event id. Check by trying with Real models off (overlay only); if that doesn't crash, look at how the
-   puppet is spawned (`Puppet.cpp`, spawn id 0xF0) and either give it a harmless script or
-   swallow A while facing a friend (`Overlay.cpp` UpdateTalk / talk-target code).
+1. ~~**Talking to a friend crashes the game of the player who pressed A.**~~ **Fixed.** It was a hang, not a crash: the game's NPC-talk event ran script id 0 (our trainers have no script), which never resolves to a file, so the script runner looped forever. `Talk.cpp` hooks the run-script call (`FUN_003DC114`) and runs our message script for friends' trainers instead. Tested: 10+ talks in a row from both sides, no hang.
 2. **Every friend shows as the same trainer (all Brendan or all May)** instead of their own
    choice. Each player's model is sent in STATE (`model` u16 @38) and the map-loader hook loads
    both (`Models.cpp`), so check where the puppet's model id is picked (`Puppet.cpp`): it may be

@@ -161,12 +161,17 @@ constexpr u64 TALK_MAX_MS = 15000;
 
 struct Talk {
     bool open = false;
+    bool native = false;   // shown in the game's own text box (Talk.cpp), not drawn by us
+    bool seenScript = false;
     int id = 0;
     u64 start = 0;
     std::string name, text;
 };
 Talk g_talk;
 u32 g_prevKeys = 0;
+u64 g_talkCooldown = 0;   // the A that closes the game's box mustn't reopen it
+constexpr u64 NATIVE_START_MS = 1500;  // our script must be running by then
+constexpr u64 TALK_COOLDOWN_MS = 400;
 
 // The friend we're facing and next to (nearest first), or 0.
 int FacingFriend(const View& v) {
@@ -192,6 +197,17 @@ void UpdateTalk(const View& v) {
     u32 pressed = keys & ~g_prevKeys;
     g_prevKeys = keys;
     u64 now = osGetTime();
+    if (g_talk.open && g_talk.native) {
+        // The game runs the box: it's over once our script has run and finished.
+        bool running = game::GameScriptRunning();
+        if (running) g_talk.seenScript = true;
+        if ((g_talk.seenScript && !running) || (!g_talk.seenScript && now - g_talk.start > NATIVE_START_MS) ||
+            now - g_talk.start > 60000) {
+            g_talk.open = false;
+            g_talkCooldown = now + TALK_COOLDOWN_MS;
+        }
+        return;
+    }
     if (g_talk.open) {
         const Remote& r = v.remotes[g_talk.id];
         float dx = r.dx - v.me.x, dy = r.dy - v.me.y;
@@ -205,15 +221,24 @@ void UpdateTalk(const View& v) {
         }
         return;
     }
-    if (!(pressed & Key::A) || !v.overlay || !v.me.inField || v.me.suspended || v.me.locked || v.me.menuOpen) return;
+    if (!(pressed & Key::A) || now < g_talkCooldown || !v.overlay || !v.me.inField || v.me.suspended ||
+        v.me.locked || v.me.menuOpen)
+        return;
     int id = FacingFriend(v);
-    if (!id) return;
+    // A friend shown by a real trainer is talked to like an NPC: the game starts its talk event
+    // and Talk.cpp's hook asks FriendGreeting() for the line. Only marker-only friends need us here.
+    if (!id || IsPuppeted(id)) return;
     const Remote& r = v.remotes[id];
-    g_talk.open = true;
+    g_talk = Talk();
     g_talk.id = id;
     g_talk.start = now;
     g_talk.name = r.name;
     g_talk.text = r.greeting[0] ? r.greeting : "...";
+    // The game's own text box when it can start one right now; our drawn copy otherwise.
+    int res = game::ShowGameMessage(g_talk.text.c_str());
+    if (res == 0) return; // the game is busy this frame (another script): ignore the press
+    g_talk.open = true;
+    g_talk.native = res == 1;
     g_session.lock.Lock();
     g_session.pendingTalk = (u8)id;
     g_session.lock.Unlock();
@@ -407,7 +432,7 @@ void DrawTop(const Screen& s) {
         if (id != v.myId && Visible(v.remotes[id], v.me)) DrawMarker(s, id, v.remotes[id], v);
     }
     DrawNotes(s, v);
-    if (g_talk.open) {
+    if (g_talk.open && !g_talk.native) {
         DrawTalkBox(s, g_talk, kPlayerColors[g_talk.id]);
         return; // the chat line would sit under the box
     }
@@ -466,6 +491,26 @@ void DrawBottom(const Screen& s) {
 }
 
 } // namespace
+
+// Called by the game's talk event (Talk.cpp) when the player presses A at a friend's trainer.
+bool FriendGreeting(u16 charId, char* out, int len) {
+    int id = (int)charId - 0xE0; // Puppet.cpp: character id = 0xE0 + player id
+    if (id < 1 || id > MAX_ID || len < 2) return false;
+    g_session.lock.Lock();
+    const Remote& r = g_session.remotes[id];
+    snprintf(out, len, "%s", r.greeting[0] ? r.greeting : "...");
+    std::string name = r.name;
+    g_session.pendingTalk = (u8)id;
+    g_session.lock.Unlock();
+    g_talk = Talk();
+    g_talk.open = true;
+    g_talk.native = true;
+    g_talk.id = id;
+    g_talk.start = osGetTime();
+    g_talk.name = name;
+    g_talk.text = out;
+    return true;
+}
 
 bool OverlayCallback(const Screen& screen) {
     if (screen.IsTop) DrawTop(screen);

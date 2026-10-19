@@ -10,6 +10,7 @@ using namespace CTRPluginFramework;
 
 namespace coop {
 bool OverlayCallback(const Screen& screen);
+bool FriendGreeting(u16 charId, char* out, int len);
 }
 
 using coop::g_session;
@@ -264,6 +265,8 @@ int main() {
 
     // Lets friends appear as their own trainer (Brendan/May); see Models.cpp.
     game::InstallModelHook();
+    // Talking to friends opens the game's own text box.
+    game::InstallTalkHooks(coop::FriendGreeting);
 
     OSD::Run(coop::OverlayCallback);
 
