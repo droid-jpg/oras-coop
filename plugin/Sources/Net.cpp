@@ -21,6 +21,7 @@ Session g_session;
 namespace {
 
 constexpr u32 SOC_SIZE = 0x20000;
+constexpr u64 BUSY_AFTER_MS = 2000;      // script control longer than this = busy
 constexpr u64 STATE_INTERVAL_MS = 66;   // ~15/s while moving
 constexpr u64 IDLE_INTERVAL_MS = 1000;  // keep-alive while idle
 constexpr u64 LOOP_SLEEP_NS = 33ULL * 1000 * 1000;
@@ -161,6 +162,9 @@ void Apply(const Frame& f) {
             if (!std::isfinite(r.dirX) || !std::isfinite(r.dirY)) r.dirX = r.dirY = 0;
             r.anim = f.get<u8>(36);
             r.model = f.get<u16>(38);
+            u8 st = f.get<u8>(37);
+            r.away = st & ST_AWAY;
+            r.riding = st & ST_RIDING;
             u64 now = osGetTime();
             if (mapChanged) {
                 r.dx = r.tx; r.dz = r.tz; r.dy = r.ty;
@@ -210,7 +214,7 @@ void Apply(const Frame& f) {
     }
 }
 
-Frame MakeState(const game::PlayerState& s, u32 seq) {
+Frame MakeState(const game::PlayerState& s, u32 seq, bool away = false) {
     Frame f(T_STATE);
     f.put<u16>(4, s.map);
     f.put<u16>(6, s.facing);
@@ -223,12 +227,13 @@ Frame MakeState(const game::PlayerState& s, u32 seq) {
     f.put<float>(32, s.dirY);
     f.put<u8>(36, s.anim);
     f.put<u16>(38, s.model);
+    f.put<u8>(37, (u8)((away ? ST_AWAY : 0) | (s.riding ? ST_RIDING : 0)));
     f.put<u32>(40, (u32)osGetTime()); // sender clock (ms) for receiver interpolation
     return f;
 }
 
 bool Changed(const game::PlayerState& a, const game::PlayerState& b) {
-    return a.map != b.map || a.facing != b.facing || a.anim != b.anim ||
+    return a.map != b.map || a.facing != b.facing || a.anim != b.anim || a.riding != b.riding ||
            std::fabs(a.dirX - b.dirX) > 0.02f || std::fabs(a.dirY - b.dirY) > 0.02f ||
            std::fabs(a.x - b.x) > 0.05f || std::fabs(a.y - b.y) > 0.05f || std::fabs(a.z - b.z) > 0.05f;
 }
@@ -247,7 +252,9 @@ void RunSession(const Config& cfg) {
     hello.putStr(16, 16, cfg.name.c_str());
     if (!conn.Send(hello)) { SetStatus(NetStatus::Failed, "Send failed"); return; }
 
-    game::PlayerState last;
+    game::PlayerState last; // last state sent from the live field
+    bool wasBusy = false;
+    u64 suspendedSince = 0;
     u64 lastSend = 0;
     u32 seq = 0;
 
@@ -262,14 +269,22 @@ void RunSession(const Config& cfg) {
         }
 
         u64 now = osGetTime();
-        if (s.valid && s.inField) { // nothing meaningful to send from the title/intro
-            u64 since = now - lastSend;
-            if ((Changed(s, last) && since >= STATE_INTERVAL_MS) || since >= IDLE_INTERVAL_MS) {
-                if (!conn.Send(MakeState(s, ++seq))) break;
-                last = s;
+        u64 since = now - lastSend;
+        bool live = s.valid && s.inField;
+        // Busy: under script control for a while (battle, soaring, long cutscene) or off the field.
+        // Short script moments (talking to an NPC) don't count, so friends don't flicker.
+        if (live && s.suspended) { if (!suspendedSince) suspendedSince = now; }
+        else suspendedSince = 0;
+        bool busy = live ? suspendedSince && now - suspendedSince >= BUSY_AFTER_MS : last.valid;
+        if (live || last.valid) {
+            const game::PlayerState& out = live ? s : last; // off the field: our last field spot
+            if (busy != wasBusy || (Changed(out, last) && since >= STATE_INTERVAL_MS) || since >= IDLE_INTERVAL_MS) {
+                if (!conn.Send(MakeState(out, ++seq, busy))) break;
+                if (live) last = s;
                 lastSend = now;
+                wasBusy = busy;
             }
-        } else if (now - lastSend >= IDLE_INTERVAL_MS) {
+        } else if (since >= IDLE_INTERVAL_MS) {
             if (!conn.Send(Frame(T_PING))) break;
             lastSend = now;
         }

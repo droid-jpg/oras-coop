@@ -15,7 +15,11 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | **Real models** (Display → Real models) | ✅ spawns a trainer per friend with the game's own spawn fn, drives position + facing every frame, despawns cleanly |
 | Walk/run animation on spawned trainers | ✅ walk 0x10 / run 0x19 (verified with a real running player), stand when stopped |
 | Player-to-player collision | ✅ you can't walk through a friend's trainer; it stops blocking while it shares your tile (else you'd be trapped), tested with two real players |
-| Two players on one PC | ✅ two Azahar windows on the relay: see each other, walk, map changes, collision |
+| Two players on one PC | ✅ two Azahar windows on the relay: see each other, walk, map changes, collision, chat |
+| Friend on a bike | 🟡 listed as "(bike)" and their trainer runs; no bike model under them yet (the bike is a separate object) |
+| Friend soaring / in a long cutscene | ✅ shown as "Name (busy)", standing at their takeoff spot; back to normal on landing |
+| Friend in a battle | ❓ should show "(busy)" the same way (script-control flag), not verified — couldn't trigger a battle |
+| Friend surfing | ❓ untested: the completed save's party has no Surf user |
 | Friend's own trainer (Brendan vs May) | ✅ the map loader is hooked to load their model on every map change; a friend who joins mid-map shows as the rival model (Littleroot) or yours until the next map change |
 | Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game). Battles not tested yet |
 

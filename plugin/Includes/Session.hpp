@@ -45,6 +45,8 @@ struct Remote {
     float dirX = 0, dirY = 0;     // facing unit vector (0,0 = unknown, use facing)
     u8 anim = 0;                  // sender's animation id (0 idle, 0x10 walk; 0 from old clients)
     u16 model = 0;                // sender's player model (0xAC Brendan, 0xAB May; 0 = unknown)
+    bool away = false;            // in a battle / soaring / cutscene: not on the field
+    bool riding = false;          // on a bike
     u64 lastUpdate = 0;
 };
 

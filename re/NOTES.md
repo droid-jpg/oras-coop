@@ -246,6 +246,22 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
 - Real running (B held): player anim **0x19**, 9 units per 67 ms (~134 units/s; walk ~77).
   Indoors/without B: 0x10.
 
+### Bikes, soaring, menus (2026-10-19, completed save "Nina", May, 8 badges)
+
+- Player mm while riding the **Mach bike**: mm+0x04 0x00010443 → **0x03210443** (bits 0x01200000;
+  0x02000000 alone is set indoors, e.g. 0x02010443 in a Pokémon Center), mm+0x59 form = 2,
+  mm+0x58 anim 0x38 while moving (0 standing), mm+0xA2C 1 → 2, mm+0x974 0x101 → 0x3801.
+  Speed ≈ 252 units/s (42 tiles in 3 s). Acro bike not in this save (ride speed = running).
+- The bike is a separate object managed by the player controller (DllField ~0x79AB..);
+  copying form/anim/flags onto an NPC trainer does not show a bike. Not reproduced yet.
+- mm+0x08 bit 0 = under script control: 0x2000400F while **soaring** (Eon Flute), 0x5 in the
+  intro; the start menu leaves it clear (0x20004002). Map id/position stay at the takeoff spot.
+- Player state +0x08 ("aux") flips between 0x0/0x1/0xC with movement — not a bike flag.
+- Surf not testable with this party (no Surf user: "The water is deep, deep blue.").
+- Registered items wheel (Y): left Mach bike, right Eon Flute, up/down rods; pick with the D-pad.
+- GDB caution: a `mem.mjs` call killed by `timeout` can leave the emulator halted → the
+  game freezes and the relay drops the player; `scratchpad/resume.mjs` sends c + D.
+
 DllField.cro: loaded at 0x006F3000 (header magic FIXD), code 0x006F3180+0x10EE80, name @0x00802000.
 Added to the Ghidra project as block "DllField" from a live dump (relocations already applied).
 

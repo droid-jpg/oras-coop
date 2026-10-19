@@ -137,7 +137,8 @@ View Snapshot() {
 View g_view;
 
 bool Visible(const Remote& r, const game::PlayerState& me) {
-    return r.active && r.hasState && me.valid && me.inField && r.map == me.map && osGetTime() - r.lastUpdate < STALE_MS;
+    return r.active && r.hasState && me.valid && me.inField && !me.suspended && r.map == me.map &&
+           osGetTime() - r.lastUpdate < STALE_MS;
 }
 
 void DrawStatus(const Screen& s, const View& v) {
@@ -163,7 +164,7 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
         labelY = sy - 36;
     }
     const Color& col = kPlayerColors[id];
-    std::string label = r.name;
+    std::string label = r.away ? std::string(r.name) + " (busy)" : std::string(r.name);
 
     bool onScreen = sx >= 8 && sx < TOP_W - 8 && sy >= 20 && sy < TOP_H - 8;
     if (onScreen) {
@@ -228,9 +229,11 @@ void DrawBottom(const Screen& s) {
         if (!r.active || id == v.myId) continue;
         bool same = Visible(r, v.me);
         char buf[48];
+        const char* bike = r.riding ? " (bike)" : "";
         if (!r.hasState) snprintf(buf, sizeof buf, "%s  (loading)", r.name);
-        else if (same) snprintf(buf, sizeof buf, "%s  here", r.name);
-        else snprintf(buf, sizeof buf, "%s  map %u", r.name, (unsigned)r.map);
+        else if (r.away) snprintf(buf, sizeof buf, "%s  (busy)", r.name); // battle, soaring...
+        else if (same) snprintf(buf, sizeof buf, "%s  here%s", r.name, bike);
+        else snprintf(buf, sizeof buf, "%s  map %u%s", r.name, (unsigned)r.map, bike);
         int y = 18 + rows * 12;
         Rect(s, 4, y, 150, 12, kBg);
         Text(s, buf, 8, y + 1, same ? kPlayerColors[id] : Color(160, 160, 160));

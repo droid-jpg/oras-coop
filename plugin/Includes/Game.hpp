@@ -17,6 +17,8 @@ struct PlayerState {
     // and its flags have 0x4000. During the intro the save's field is already built with the
     // player flagged 0x5; calling game functions on it then hangs the game (verified).
     bool inField = false;
+    bool riding = false;       // on a bike: player mm+0x04 has 0x01200000
+    bool suspended = false;    // under script control (mm+0x08 bit 0): soaring, cutscenes, battles?
 };
 
 // Finds the player object (known address first, then a heap scan for its vtable).
@@ -88,6 +90,12 @@ bool ProjectToTop(float x, float z, float y, float& sx, float& sy);
 
 // True while the field is live (see PlayerState::inField).
 bool PlayerFieldActive();
+
+// True while the player is under script control (soaring, cutscenes); clear in menus.
+bool PlayerSuspended();
+
+// True while the player rides a bike (verified with the Mach bike; flags 0x00010443 -> 0x03210443; bits 0x01200000).
+bool PlayerRiding();
 
 // Reads the local player's model id (0 if unknown).
 u16 PlayerModel();

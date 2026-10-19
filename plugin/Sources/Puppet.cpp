@@ -75,7 +75,12 @@ u8 PickAnim(Spawned& s, const Remote& r, u64 now) {
         s.fromSender = false;
         return ANIM_IDLE;
     }
-    if (r.anim != ANIM_IDLE && r.anim < ANIM_MAX) {
+    if (r.away) return ANIM_IDLE; // busy (battle...): standing where they are
+    if (r.riding) {
+        // No bike model for other characters yet: pedal-speed motion reads best as running.
+        s.moveAnim = ANIM_RUN;
+        s.fromSender = true;
+    } else if (r.anim != ANIM_IDLE && r.anim < ANIM_MAX) {
         s.moveAnim = r.anim;  // the sender's own clip
         s.fromSender = true;
     } else if (!s.fromSender || !s.moveAnim) {

@@ -13,6 +13,12 @@ enum : u8 {
     T_HELLO = 1, T_WELCOME, T_STATE, T_CHAT, T_JOIN, T_LEAVE, T_ERROR, T_PING
 };
 
+// STATE status bits (@37).
+enum : u8 {
+    ST_AWAY = 1 << 0,   // busy: script control 2+ s (soaring, battle...) or off the field (last spot)
+    ST_RIDING = 1 << 1, // on a bike
+};
+
 struct Frame {
     u8 b[FRAME];
 
