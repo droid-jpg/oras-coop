@@ -30,6 +30,7 @@ void Config::Load() {
         else if (k == "port") port = (u16)std::atoi(v.c_str());
         else if (k == "room") room = v;
         else if (k == "name") name = v;
+        else if (k == "greeting") greeting = v;
         else if (k == "scale") pxPerUnit = (float)std::atof(v.c_str());
         else if (k == "overlay") overlay = v != "0";
         else if (k == "puppets") puppets = v == "1";
@@ -44,7 +45,7 @@ void Config::Save() const {
     char scale[16];
     snprintf(scale, sizeof scale, "%.2f", pxPerUnit);
     std::string text = "server=" + server + "\nport=" + std::to_string(port) +
-                       "\nroom=" + room + "\nname=" + name +
+                       "\nroom=" + room + "\nname=" + name + "\ngreeting=" + greeting +
                        "\nscale=" + scale + "\noverlay=" + (overlay ? "1" : "0") +
                        "\npuppets=" + (puppets ? "1" : "0") + "\n";
     f.Write(text.data(), text.size());

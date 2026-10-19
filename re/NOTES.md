@@ -336,3 +336,21 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
 - Plan: (1) ~~check whether the object address is stable across reboots~~ done;
   (2) runtime heap scan for vtable `0x005DEDC0` + sanity checks (map ID, finite coords);
   (3) use Ghidra xrefs to `0x005DEDC0` to find the constructor/class and a real owner pointer.
+
+### Text, place names, UI flags (2026-10-19)
+
+- **GetString** `FUN_00139A34(msgData, line, strbuf)`; decrypt `FUN_0013F758`: key starts at
+  (line + 3) * 0x2983, rotl 3 per UTF-16 char. msgData: vtable 0x005DE400, +0xC in-memory flag,
+  +0x18 header (u16 languages, u16 lines, ..., +8 = 0 → encrypted), +0x1C section (entry i at
+  +i*8+4: u32 offset, u16 length). StrBuf: +4 buffer, u16 capacity +8, u16 length +0xA, +0xC valid.
+- `FUN_00451440(ctx, strbuf, file, line)` = GetText with a small cache table at 0x00630CB0.
+- **Zone table**: `*(0x005F45BC)` → 0x218 × 0x38 entries (resident; `FUN_003D99FC` resident mode).
+  +0x1C & 0x3FF = place-name line (Littleroot 170, Slateport 0xBA, Route 109 220); `FUN_004D88E8`.
+  Area banner: DllField `FUN_007126B0`, place text = resident 356-line file (`*(obj+0x48)+0x1C8`).
+- **Field message window**: DllField `FUN_00747308(obj, params)` builds it (params +4 = line, -1 none);
+  the Surf prompt fetches line 0xC there. Not driven by the plugin yet.
+- **UI flags (player mm+0x08)**: idle 0x00044006, text box 0x0004400E (bit 0x8), X menu 0x0204400E
+  (+0x02000000). Pressing A at a spawned friend does nothing in-game (no script).
+- Two Azahar instances both bind GDB 24689 (SO_REUSEADDR) and connections alternate between them.
+  Give the second its own port: `gdbstub_port\default=false` + `gdbstub_port=24690` before launch
+  (with `default=true` the value is ignored).

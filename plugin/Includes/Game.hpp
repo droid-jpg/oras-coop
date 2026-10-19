@@ -20,6 +20,8 @@ struct PlayerState {
     bool riding = false;       // on a bike: player mm+0x04 has 0x01200000 (and not surfing)
     bool surfing = false;      // surfing: player mm+0x04 has 0x10000000 (0x13210443 vs bike 0x03210443)
     bool suspended = false;    // under script control (mm+0x08 bit 0): soaring, cutscenes, battles?
+    bool locked = false;       // input locked by the game's UI (mm+0x08 bit 0x8): text box, X menu
+    bool menuOpen = false;     // X menu open (mm+0x08 bit 0x02000000), drawn on the bottom screen
 };
 
 // Finds the player object (known address first, then a heap scan for its vtable).
@@ -135,6 +137,11 @@ bool RivalIsMay();
 // True if `model` is in the current map's resident model table, i.e. the game preloaded its
 // 3D data for this map, so SpawnCharacter can use it.
 bool IsModelResident(u16 model);
+
+// Writes the place name the game shows for `zone` (the map id in PlayerState), e.g. "Route 109";
+// buildings give their town's name. Read from the game's own place-name text (Places.cpp).
+// Returns false while that text isn't found yet (it is searched for a few pages per call).
+bool PlaceName(u16 zone, char* out, int len);
 
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);

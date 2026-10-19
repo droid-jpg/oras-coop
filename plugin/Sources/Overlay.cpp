@@ -141,6 +141,197 @@ bool Visible(const Remote& r, const game::PlayerState& me) {
            osGetTime() - r.lastUpdate < STALE_MS;
 }
 
+// The game's place name for a map ("Route 109"; buildings give their town), or "map N" until
+// the place-name text has been found.
+std::string PlaceOf(u16 map) {
+    char buf[32];
+    if (game::PlaceName(map, buf, sizeof buf)) return buf;
+    snprintf(buf, sizeof buf, "map %u", (unsigned)map);
+    return buf;
+}
+
+// ---- Talking to a friend ----
+// Walk up to a friend's trainer and press A: their greeting opens in a text box styled like the
+// game's, the way talking to an NPC does. A/B closes it; walking away or any game UI too.
+constexpr float TALK_RANGE = 1.6f * TILE;     // the tile in front of us (diagonals included)
+constexpr float TALK_LEAVE = 2.6f * TILE;     // closes once this far apart
+constexpr float TALK_FACING = 0.7f;           // cos of the widest angle that counts as "facing"
+constexpr float TALK_CHARS_PER_MS = 0.06f;    // typewriter speed (60 characters/s)
+constexpr u64 TALK_MAX_MS = 15000;
+
+struct Talk {
+    bool open = false;
+    int id = 0;
+    u64 start = 0;
+    std::string name, text;
+};
+Talk g_talk;
+u32 g_prevKeys = 0;
+
+// The friend we're facing and next to (nearest first), or 0.
+int FacingFriend(const View& v) {
+    float fx = v.me.dirX, fy = v.me.dirY;
+    if (fx == 0 && fy == 0) game::FacingToDir(v.me.facing, fx, fy);
+    int best = 0;
+    float bestD = TALK_RANGE;
+    for (int id = 1; id <= MAX_ID; id++) {
+        const Remote& r = v.remotes[id];
+        if (id == v.myId || !Visible(r, v.me)) continue;
+        float dx = r.dx - v.me.x, dy = r.dy - v.me.y, dz = r.dz - v.me.z;
+        float d = std::sqrt(dx * dx + dy * dy);
+        if (d < 1.0f || d > bestD || std::fabs(dz) > TILE) continue;
+        if ((dx * fx + dy * fy) / d < TALK_FACING) continue;
+        best = id;
+        bestD = d;
+    }
+    return best;
+}
+
+void UpdateTalk(const View& v) {
+    u32 keys = Controller::GetKeysDown(false);
+    u32 pressed = keys & ~g_prevKeys;
+    g_prevKeys = keys;
+    u64 now = osGetTime();
+    if (g_talk.open) {
+        const Remote& r = v.remotes[g_talk.id];
+        float dx = r.dx - v.me.x, dy = r.dy - v.me.y;
+        bool typed = (now - g_talk.start) * TALK_CHARS_PER_MS >= g_talk.text.size();
+        if (!Visible(r, v.me) || v.me.locked || v.me.menuOpen || dx * dx + dy * dy > TALK_LEAVE * TALK_LEAVE ||
+            now - g_talk.start > TALK_MAX_MS) {
+            g_talk.open = false;
+        } else if (pressed & (Key::A | Key::B)) {
+            if (typed) g_talk.open = false;
+            else g_talk.start = now - (u64)(g_talk.text.size() / TALK_CHARS_PER_MS) - 1; // show it all
+        }
+        return;
+    }
+    if (!(pressed & Key::A) || !v.overlay || !v.me.inField || v.me.suspended || v.me.locked || v.me.menuOpen) return;
+    int id = FacingFriend(v);
+    if (!id) return;
+    const Remote& r = v.remotes[id];
+    g_talk.open = true;
+    g_talk.id = id;
+    g_talk.start = now;
+    g_talk.name = r.name;
+    g_talk.text = r.greeting[0] ? r.greeting : "...";
+    g_session.lock.Lock();
+    g_session.pendingTalk = (u8)id;
+    g_session.lock.Unlock();
+}
+
+// Splits text into at most two lines of maxChars, breaking at spaces where possible.
+void Wrap(const std::string& t, size_t maxChars, std::string& l1, std::string& l2) {
+    if (t.size() <= maxChars) { l1 = t; l2.clear(); return; }
+    size_t cut = t.rfind(' ', maxChars);
+    if (cut == std::string::npos || cut == 0) cut = maxChars;
+    l1 = t.substr(0, cut);
+    l2 = t.substr(cut + (t[cut] == ' ' ? 1 : 0), maxChars);
+}
+
+// The game's text box: white panel with a slate border near the bottom of the top screen, the
+// speaker's name in a tab above it, text typed out, and a blinking red arrow once it's all shown.
+void DrawTalkBox(const Screen& s, const Talk& t, const Color& accent) {
+    constexpr int X = 12, Y = 180, W = 376, H = 52;
+    const Color border(84, 92, 110), panel(250, 250, 250), line(206, 214, 228), ink(56, 56, 64);
+    u64 elapsed = osGetTime() - t.start;
+    size_t shown = (size_t)(elapsed * TALK_CHARS_PER_MS);
+    if (shown > t.text.size()) shown = t.text.size();
+
+    // Name tab.
+    int tw = TextWidth(t.name) + 14;
+    Rect(s, X + 8, Y - 13, tw, 2, border);
+    Rect(s, X + 6, Y - 11, 2, 12, border);
+    Rect(s, X + 8 + tw, Y - 11, 2, 12, border);
+    Rect(s, X + 8, Y - 11, tw, 12, panel);
+    Rect(s, X + 10, Y - 9, 3, 8, accent);
+    Text(s, t.name, X + 16, Y - 10, ink);
+
+    // Panel with slightly rounded corners (the corner pixels are left out of the border).
+    Rect(s, X + 2, Y, W - 4, 2, border);
+    Rect(s, X + 2, Y + H - 2, W - 4, 2, border);
+    Rect(s, X, Y + 2, 2, H - 4, border);
+    Rect(s, X + W - 2, Y + 2, 2, H - 4, border);
+    Rect(s, X + 1, Y + 1, 1, 1, border);
+    Rect(s, X + W - 2, Y + 1, 1, 1, border);
+    Rect(s, X + 1, Y + H - 2, 1, 1, border);
+    Rect(s, X + W - 2, Y + H - 2, 1, 1, border);
+    Rect(s, X + 2, Y + 2, W - 4, H - 4, panel);
+    Rect(s, X + 4, Y + 4, W - 8, H - 8, line, false);
+
+    std::string l1, l2;
+    Wrap(t.text.substr(0, shown), (W - 32) / 6, l1, l2);
+    Text(s, l1, X + 14, Y + 12, ink);
+    if (!l2.empty()) Text(s, l2, X + 14, Y + 28, ink);
+
+    if (shown == t.text.size() && (elapsed / 400) % 2 == 0) {
+        // Down arrow, like the game's "more" marker.
+        const Color red(226, 70, 70);
+        for (int i = 0; i < 4; i++) Rect(s, X + W - 22 + i, Y + H - 16 + i, 9 - 2 * i, 1, red);
+    }
+}
+
+// ---- Friends leaving / arriving through doors and map edges ----
+// A friend who leaves our map vanishes on the spot; a short fading note there says where they
+// went, and one at their arrival spot says they came in.
+constexpr u64 NOTE_MS = 2200;
+
+struct Note {
+    u64 start = 0;
+    float x = 0, z = 0, y = 0;
+    u16 map = 0;
+    std::string text;
+};
+Note g_notes[MAX_ID + 1];
+u16 g_lastMap[MAX_ID + 1];
+bool g_wasHere[MAX_ID + 1];
+float g_lastX[MAX_ID + 1], g_lastZ[MAX_ID + 1], g_lastY[MAX_ID + 1];
+
+void TrackDoors(const View& v) {
+    static bool init = false;
+    if (!init) { for (auto& m : g_lastMap) m = 0xFFFF; init = true; }
+    u64 now = osGetTime();
+    for (int id = 1; id <= MAX_ID; id++) {
+        const Remote& r = v.remotes[id];
+        bool known = r.active && r.hasState;
+        bool here = id != v.myId && known && v.me.valid && v.me.inField && r.map == v.me.map;
+        if (known && g_wasHere[id] && !here && r.map != g_lastMap[id] && g_lastMap[id] == v.me.map) {
+            Note& n = g_notes[id];
+            n = Note();
+            n.start = now;
+            n.x = g_lastX[id]; n.z = g_lastZ[id]; n.y = g_lastY[id];
+            n.map = v.me.map;
+            n.text = std::string(r.name) + " -> " + PlaceOf(r.map);
+        } else if (here && !g_wasHere[id] && g_lastMap[id] != 0xFFFF && g_lastMap[id] != r.map) {
+            Note& n = g_notes[id];
+            n = Note();
+            n.start = now;
+            n.x = r.dx; n.z = r.dz; n.y = r.dy;
+            n.map = v.me.map;
+            n.text = std::string(r.name) + " arrived";
+        }
+        if (here) { g_lastX[id] = r.dx; g_lastZ[id] = r.dz; g_lastY[id] = r.dy; }
+        g_wasHere[id] = here;
+        g_lastMap[id] = known ? r.map : 0xFFFF;
+    }
+}
+
+void DrawNotes(const Screen& s, const View& v) {
+    u64 now = osGetTime();
+    for (int id = 1; id <= MAX_ID; id++) {
+        const Note& n = g_notes[id];
+        if (!n.start || now - n.start > NOTE_MS || n.map != v.me.map) continue;
+        float fx, fy;
+        if (!game::ProjectToTop(n.x, n.z + HEAD_HEIGHT, n.y, fx, fy)) continue;
+        float fade = 1.0f - (float)(now - n.start) / NOTE_MS;
+        int rise = (int)((now - n.start) / 80); // drifts up as it fades
+        int lw = TextWidth(n.text) + 6;
+        int x = (int)Clampf(fx - lw / 2.0f, 2, (float)(TOP_W - lw - 2)), y = (int)fy - 14 - rise;
+        const Color& c = kPlayerColors[id];
+        Rect(s, x, y, lw, 12, Color(8, 14, 24, (u8)(170 * fade)));
+        Text(s, n.text, x + 3, y + 1, Color(c.r, c.g, c.b, (u8)(255 * fade)));
+    }
+}
+
 void DrawStatus(const Screen& s, const View& v) {
     bool ok = v.status == NetStatus::Connected;
     std::string line = ok ? ("oras-coop  " + v.room + "  #" + std::to_string(v.myId)) : v.statusText;
@@ -203,11 +394,22 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
 void DrawTop(const Screen& s) {
     g_view = Snapshot();
     const View& v = g_view;
-    UpdatePuppets(v.puppets, v.me, v.remotes, v.myId);
-    DrawStatus(s, v);
-    if (!v.overlay) return;
+    UpdateTalk(v);
+    TrackDoors(v);
+    UpdatePuppets(v.puppets, v.me, v.remotes, v.myId, g_talk.open ? g_talk.id : 0);
+    // The X menu dims the field and the game's own text boxes sit where our labels go: step aside.
+    // (The lock comes a few frames before the menu bit; once the menu is up the game stops
+    // redrawing the top screen, so whatever we drew last would stay frozen on it.)
+    bool gameUi = v.me.menuOpen || v.me.locked;
+    if (!gameUi) DrawStatus(s, v);
+    if (!v.overlay || gameUi) return;
     for (int id = 1; id <= MAX_ID; id++) {
         if (id != v.myId && Visible(v.remotes[id], v.me)) DrawMarker(s, id, v.remotes[id], v);
+    }
+    DrawNotes(s, v);
+    if (g_talk.open) {
+        DrawTalkBox(s, g_talk, kPlayerColors[g_talk.id]);
+        return; // the chat line would sit under the box
     }
     if (!v.chat.empty() && osGetTime() - v.chatTime < CHAT_SHOW_MS) {
         int w = TextWidth(v.chat) + 8;
@@ -220,7 +422,7 @@ void DrawBottom(const Screen& s) {
     const View& v = g_view; // filled by the top-screen pass this frame
     // Off while the game runs a script (dialogs, yes/no prompts, battles): our list and radar
     // would cover its touch buttons.
-    if (!v.overlay || v.me.suspended) return;
+    if (!v.overlay || v.me.suspended || v.me.menuOpen || v.me.locked) return;
 
     // Radar: 90x90 box in the top-right corner, north up, our player in the centre.
     constexpr int R = 45, CX = BOT_W - R - 4, CY = R + 4;
@@ -229,22 +431,24 @@ void DrawBottom(const Screen& s) {
     Rect(s, CX - 1, CY - 1, 3, 3, Color::White);
 
     // Player list on the left.
+    constexpr int LIST_W = 212;
     int rows = 0;
-    Rect(s, 4, 4, 150, 12, kBg);
+    Rect(s, 4, 4, LIST_W, 12, kBg);
     Text(s, "Players", 8, 5, kAccent);
     for (int id = 1; id <= MAX_ID; id++) {
         const Remote& r = v.remotes[id];
         if (!r.active || id == v.myId) continue;
         bool same = Visible(r, v.me);
-        bool sameMap = r.hasState && v.me.valid && r.map == v.me.map; // "here" even while we're busy
-        char buf[48];
+        bool sameMap = r.hasState && v.me.inField && r.map == v.me.map; // "here" even while we're busy
+        char buf[64];
         const char* bike = r.surfing ? " (surfing)" : r.riding ? " (bike)" : "";
+        const char* status = r.away ? " (busy)" : bike; // busy: battle, soaring...
         if (!r.hasState) snprintf(buf, sizeof buf, "%s  (loading)", r.name);
-        else if (r.away) snprintf(buf, sizeof buf, "%s  (busy)", r.name); // battle, soaring...
-        else if (sameMap) snprintf(buf, sizeof buf, "%s  here%s", r.name, bike);
-        else snprintf(buf, sizeof buf, "%s  map %u%s", r.name, (unsigned)r.map, bike);
+        else if (sameMap) snprintf(buf, sizeof buf, "%s  here%s", r.name, status);
+        else snprintf(buf, sizeof buf, "%s  %s%s", r.name, PlaceOf(r.map).c_str(), status);
+        if (TextWidth(buf) > LIST_W - 8) buf[(LIST_W - 8) / 6] = 0;
         int y = 18 + rows * 12;
-        Rect(s, 4, y, 150, 12, kBg);
+        Rect(s, 4, y, LIST_W, 12, kBg);
         Text(s, buf, 8, y + 1, sameMap ? kPlayerColors[id] : Color(160, 160, 160));
         rows++;
 
@@ -256,7 +460,7 @@ void DrawBottom(const Screen& s) {
         }
     }
     if (rows == 0) {
-        Rect(s, 4, 18, 150, 12, kBg);
+        Rect(s, 4, 18, LIST_W, 12, kBg);
         Text(s, "Nobody else here yet", 8, 19, Color(160, 160, 160));
     }
 }

@@ -13,6 +13,7 @@ struct Config {
     u16 port = 7777;
     std::string room = "HOENN";
     std::string name = "Trainer";
+    std::string greeting = "Hi!";  // shown to friends who talk to you (A facing your trainer)
     float pxPerUnit = 1.4f; // overlay scale: screen pixels per world unit (tile = 18 units)
     bool overlay = true;
     bool puppets = false;   // "real models": drive NPCs to remote players (writes game memory)
@@ -47,7 +48,8 @@ struct Remote {
     u16 model = 0;                // sender's player model (0xAC Brendan, 0xAB May; 0 = unknown)
     bool away = false;            // in a battle / soaring / cutscene: not on the field
     bool riding = false;          // on a bike
-    bool surfing = false;         // surfing (no water mount for other characters yet: marker only)
+    bool surfing = false;         // surfing (shown on the game's surf mount)
+    char greeting[40] = {0};      // what they say when we talk to them (T_GREET; empty = not received)
     u64 lastUpdate = 0;
 };
 
@@ -64,6 +66,8 @@ struct Session {
     std::string lastChat;        // shown on screen
     u64 lastChatTime = 0;
     bool reconnect = false;      // menu asks net thread to reconnect
+    bool greetChanged = false;   // menu changed cfg.greeting: net thread re-sends it
+    u8 pendingTalk = 0;          // overlay: we talked to this player (net thread sends T_TALK)
     // Local player state, read from game memory by the game thread (overlay) each frame and
     // published here; the net thread only reads this copy, never game memory.
     game::PlayerState local;

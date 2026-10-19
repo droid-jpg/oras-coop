@@ -20,6 +20,8 @@ TCP, little-endian, **fixed 48-byte frames**. Every frame starts with:
 | 6 | LEAVE | server → client | `player` = who left |
 | 7 | ERROR | server → client | `code` u8 @4 (1 = room full, 2 = bad hello, 3 = version mismatch) |
 | 8 | PING | client → server | none (keep-alive; not relayed) |
+| 9 | GREET | both | `text[40]` (4..43) — what the sender says when someone talks to them. Sent after WELCOME, whenever it changes, and again when someone joins (the server keeps no state). |
+| 10 | TALK | both | `target` u8 @4 — the sender pressed A facing player `target`; only the target reacts (a notice). |
 
 ## Flow
 
@@ -27,7 +29,7 @@ TCP, little-endian, **fixed 48-byte frames**. Every frame starts with:
 2. Server replies WELCOME, then sends a JOIN for every player already in the room,
    then broadcasts a JOIN for the new player to everyone else.
 3. Clients send STATE about 15×/s while moving and at least once per second while idle.
-   The server relays STATE and CHAT to everyone else in the room.
+   The server relays STATE, CHAT, GREET and TALK to everyone else in the room.
 4. On disconnect, or after 10 s of silence, the server broadcasts LEAVE.
 
 Positions are map-local; clients only draw players whose `map` matches their own.

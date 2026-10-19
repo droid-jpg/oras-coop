@@ -126,6 +126,7 @@ void Apply(const Frame& f) {
         g_session.myId = id;
         g_session.status = NetStatus::Connected;
         g_session.statusText = "Connected as #" + std::to_string(id);
+        g_session.greetChanged = true; // tell everyone our greeting
         break;
     case T_JOIN:
         if (id >= 1 && id <= MAX_ID && id != g_session.myId) {
@@ -135,6 +136,7 @@ void Apply(const Frame& f) {
             f.getStr(4, 16, r.name);
             g_session.lastChat = std::string(r.name) + " joined";
             g_session.lastChatTime = osGetTime();
+            g_session.greetChanged = true; // the server keeps no state: the newcomer needs ours
         }
         break;
     case T_LEAVE:
@@ -204,6 +206,15 @@ void Apply(const Frame& f) {
             g_session.lastChatTime = osGetTime();
         }
         break;
+    case T_GREET:
+        if (id >= 1 && id <= MAX_ID) f.getStr(4, 40, g_session.remotes[id].greeting);
+        break;
+    case T_TALK:
+        if (id >= 1 && id <= MAX_ID && f.get<u8>(4) == g_session.myId) {
+            g_session.lastChat = std::string(g_session.remotes[id].name) + " is talking to you!";
+            g_session.lastChatTime = osGetTime();
+        }
+        break;
     case T_ERROR: {
         u8 code = f.get<u8>(4);
         g_session.status = NetStatus::Failed;
@@ -261,13 +272,20 @@ void RunSession(const Config& cfg) {
     u32 seq = 0;
 
     while (g_session.running) {
-        std::string chat;
+        std::string chat, greeting;
         game::PlayerState s;
+        u8 talkTo = 0;
         {
             Guard g(g_session.lock);
             if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
             chat.swap(g_session.pendingChat);
             s = g_session.local; // published by the game thread each frame
+            if (g_session.greetChanged && g_session.myId) {
+                greeting = g_session.cfg.greeting.empty() ? " " : g_session.cfg.greeting;
+                g_session.greetChanged = false;
+            }
+            talkTo = g_session.pendingTalk;
+            g_session.pendingTalk = 0;
         }
 
         u64 now = osGetTime();
@@ -295,6 +313,17 @@ void RunSession(const Config& cfg) {
             Frame c(T_CHAT);
             c.putStr(4, 40, chat.c_str());
             if (!conn.Send(c)) break;
+        }
+
+        if (!greeting.empty()) {
+            Frame gr(T_GREET);
+            gr.putStr(4, 40, greeting.c_str());
+            if (!conn.Send(gr)) break;
+        }
+        if (talkTo) {
+            Frame t(T_TALK);
+            t.put<u8>(4, talkTo);
+            if (!conn.Send(t)) break;
         }
 
         Frame in;

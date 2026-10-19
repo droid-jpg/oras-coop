@@ -23,6 +23,12 @@ constexpr u32 OFF_Y      = 0x1C;
 
 static u32 s_obj = 0;
 
+// Player mm+0x08 bits for the game's own UI (verified on Route 109): idle 0x00044006, a text box
+// (Surf prompt) 0x0004400E, the X menu 0x0204400E. Bit 0 (script control) stays clear in both.
+constexpr u32 UI_LOCKED = 0x8;
+constexpr u32 UI_MENU = 0x02000000;
+static u32 PlayerUiFlags();
+
 static bool Plausible(float v) {
     return std::isfinite(v) && std::fabs(v) < 100000.0f;
 }
@@ -85,6 +91,9 @@ PlayerState Read() {
     s.surfing = s.inField && PlayerSurfing();
     s.riding = s.inField && !s.surfing && PlayerRiding();
     s.suspended = s.inField && PlayerSuspended();
+    u32 ui = s.inField ? PlayerUiFlags() : 0;
+    s.locked = ui & UI_LOCKED;
+    s.menuOpen = ui & UI_MENU;
     return s;
 }
 
@@ -304,7 +313,12 @@ bool PlayerFieldActive() {
     return p && Process::Read32(p + MM_FLAGS8, flags8) && (flags8 & FIELD_ACTIVE);
 }
 
-constexpr u32 RIDING = 0x01200000;    // player mm+0x04 bits set while on a bike (0x02000000 = indoors)
+static u32 PlayerUiFlags() {
+    u32 p = FindPlayerSlot(), flags8 = 0;
+    return p && Process::Read32(p + MM_FLAGS8, flags8) ? flags8 : 0;
+}
+
+constexpr u32 RIDING = 0x01200000;   // player mm+0x04 bits set while on a bike (0x02000000 = indoors)
 
 bool PlayerSuspended() {
     // mm+0x08 bit 0: set while soaring (0x2000400F) and in the intro (0x5); clear in menus.
@@ -495,6 +509,73 @@ void FacingToDir(u16 facing, float& dirX, float& dirY) {
     const float* d = table[facing < 8 ? facing : 1];
     dirX = d[0];
     dirY = d[1];
+}
+
+// ---- Place names ----
+// Zone table: *(0x005F45BC) -> 0x218 entries of 0x38 bytes, resident from boot (FUN_003D99FC);
+// entry +0x1C & 0x3FF = place-name line (Littleroot 170, Slateport 0xBA, Route 109 220; the
+// area banner reads it through FUN_004D88E8). The place names are a resident message file
+// (vtable 0x005DE400; header: u16 languages 1, u16 lines 0x164) that we decode like GetString
+// FUN_00139A34 / FUN_0013F758: line i is XORed with a key starting at (i + 3) * 0x2983 and
+// rotated left by 3 bits per character.
+constexpr u32 ZONE_TABLE_PTR = 0x005F45BC;
+constexpr u32 ZONE_COUNT = 0x218, ZONE_SIZE = 0x38, ZONE_PLACE = 0x1C;
+constexpr u32 MSG_VTABLE = 0x005DE400;
+constexpr u32 MSG_IN_MEMORY = 0x0C, MSG_HEADER = 0x18, MSG_SECTION = 0x1C;
+constexpr u16 PLACE_LINES = 0x164;
+
+static bool IsPlaceText(u32 md) {
+    u8 inMemory = 0;
+    u32 header = 0, section = 0;
+    u16 langs = 0, lines = 0;
+    return Process::Read8(md + MSG_IN_MEMORY, inMemory) && inMemory &&
+           Process::Read32(md + MSG_HEADER, header) && Process::CheckAddress(header) &&
+           Process::Read32(md + MSG_SECTION, section) && Process::CheckAddress(section) &&
+           Process::Read16(header, langs) && langs == 1 && Process::Read16(header + 2, lines) &&
+           lines == PLACE_LINES;
+}
+
+bool PlaceName(u16 zone, char* out, int len) {
+    static u32 md = 0;
+    static Scanner scan;
+    if (len < 2 || zone >= ZONE_COUNT) return false;
+    u32 table = 0;
+    u16 place = 0;
+    if (!Process::Read32(ZONE_TABLE_PTR, table) || !Process::CheckAddress(table) ||
+        !Process::Read16(table + zone * ZONE_SIZE + ZONE_PLACE, place))
+        return false;
+    place &= 0x3FF;
+    if (place >= PLACE_LINES) return false;
+    u32 vt = 0;
+    if (!md || !Process::Read32(md, vt) || vt != MSG_VTABLE || !IsPlaceText(md)) {
+        md = scan.Step(MSG_VTABLE, IsPlaceText);
+        if (!md) return false;
+    }
+    u32 header = 0, section = 0, offset = 0;
+    u16 chars = 0;
+    bool encrypted = true;
+    u32 plain = 0;
+    Process::Read32(md + MSG_HEADER, header);
+    Process::Read32(md + MSG_SECTION, section);
+    if (Process::Read32(header + 8, plain)) encrypted = plain == 0;
+    if (!Process::Read32(section + place * 8 + 4, offset) || !Process::Read16(section + place * 8 + 8, chars))
+        return false;
+    u32 key = ((place + 3) * 0x2983) & 0xFFFF;
+    int n = 0;
+    for (u16 i = 0; i < chars && n < len - 1; i++) {
+        u16 c = 0;
+        if (!Process::Read16(section + offset + i * 2, c)) break;
+        if (encrypted) {
+            c ^= (u16)key;
+            key = ((key << 3) | (key >> 13)) & 0xFFFF;
+        }
+        if (c == 0) break;
+        if (c == 0xE9 || c == 0xC9) c = 'e';        // "Pokemon"
+        else if (c < 0x20 || c > 0x7E) c = '?';     // our font is ASCII
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return n > 0;
 }
 
 } // namespace game

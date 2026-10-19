@@ -108,7 +108,7 @@ void Despawn(int id, Spawned& s, u16 currentMap) {
 
 } // namespace
 
-void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId) {
+void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId, int talkingTo) {
     u64 now = osGetTime();
     // Ask the map loader (Models.cpp) to load the trainer models our friends use, so they are
     // there by the next map change, wherever we go.
@@ -166,6 +166,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         }
         float dx = r.dirX, dy = r.dirY;
         if (dx == 0 && dy == 0) game::FacingToDir(r.facing, dx, dy);
+        if (id == talkingTo && r.anim == ANIM_IDLE) { dx = me.x - r.dx; dy = me.y - r.dy; } // turns to us, like an NPC
         // Solid unless it overlaps us: two characters on one tile trap the local player (seen with
         // two real players coming out of the same door). Hysteresis avoids flicker at the edge.
         float ox = r.dx - me.x, oy = r.dy - me.y, d2 = ox * ox + oy * oy;

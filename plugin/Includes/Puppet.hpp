@@ -5,8 +5,9 @@
 
 namespace coop {
 
-// Call once per frame with the smoothed remote positions.
-void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId);
+// Call once per frame with the smoothed remote positions. talkingTo = the remote we're talking
+// to (its trainer turns to face us), 0 for none.
+void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId, int talkingTo = 0);
 
 // True if remote player `id` is currently shown by a spawned trainer.
 bool IsPuppeted(int id);

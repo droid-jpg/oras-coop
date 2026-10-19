@@ -23,6 +23,10 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Friend's own trainer (Brendan vs May) | ✅ the map loader is hooked to load their model on every map change; a friend who joins mid-map shows as the rival model (Littleroot) or yours until the next map change |
 | Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game) |
 | Towns and routes | ✅ (a wrong "field is live" check had stopped syncing on routes; fixed) |
+| Map names | ✅ player list shows where friends are ("Slateport City", "Route 109"), read from the game's own place-name text |
+| Game menus and text boxes | ✅ the overlay steps aside while the X menu or a game text box is open (player mm+0x08 bits 0x8 / 0x02000000) |
+| Doors and map edges | ✅ a friend leaving your map leaves a fading "Name -> Place" note where they left; arriving shows "Name arrived" |
+| Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting) opens in a game-style text box, their trainer turns to you, and they get "Name is talking to you!". Drawn by the plugin, not the game's own window yet |
 
 ## Notes for the next session
 

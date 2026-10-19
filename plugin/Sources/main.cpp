@@ -94,6 +94,34 @@ void MenuChat(MenuEntry*) {
     g_session.lock.Unlock();
 }
 
+// What friends see in a text box when they walk up to your trainer and press A.
+void MenuGreeting(MenuEntry*) {
+    static const char* presets[] = { "Hi!", "Nice to meet you!", "Want to battle?", "Want to trade?",
+                                     "Let's explore together!", "Follow me!", "I'm busy right now." };
+    g_session.lock.Lock();
+    std::string current = g_session.cfg.greeting;
+    g_session.lock.Unlock();
+    Keyboard kb("Your greeting (friends see it when they\ntalk to you with A). Now: \"" + current + "\"");
+    std::vector<std::string> options = { ">> Type your own <<" };
+    for (auto p : presets) options.push_back(p);
+    kb.Populate(options);
+    int idx = kb.Open();
+    std::string text = current;
+    if (idx == 0) {
+        if (!AskText("Greeting:", text, 39)) return;
+    } else if (idx > 0) {
+        text = presets[idx - 1];
+    } else {
+        return;
+    }
+    g_session.lock.Lock();
+    g_session.cfg.greeting = text;
+    g_session.cfg.Save();
+    g_session.greetChanged = true;
+    g_session.lock.Unlock();
+    OSD::Notify("Greeting: " + text);
+}
+
 void MenuScale(MenuEntry*) {
     static const float scales[] = { 0.8f, 1.0f, 1.2f, 1.4f, 1.6f, 1.8f, 2.0f, 2.4f };
     Keyboard kb("Marker scale (pixels per world unit).\nPick the one where a friend standing\n1 tile away lines up best:");
@@ -216,6 +244,8 @@ int main() {
 
     *menu += new MenuEntry("Status", nullptr, MenuStatus);
     *menu += new MenuEntry("Send chat", nullptr, MenuChat);
+    *menu += new MenuEntry("Your greeting", nullptr, MenuGreeting,
+                           "What friends see when they walk up to you and press A.");
 
     MenuFolder* setup = new MenuFolder("Setup");
     *setup += new MenuEntry("Server IP / port", nullptr, MenuServer);
