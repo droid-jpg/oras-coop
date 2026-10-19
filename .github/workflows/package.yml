@@ -33,8 +33,12 @@ jobs:
           SigLevel = Optional
           CONF
           apt-get update && apt-get install -y --no-install-recommends zip
-          dkp-pacman -Sy --noconfirm
-          dkp-pacman -S --noconfirm --needed libctrpf 3gxtool
+          # pkg.devkitpro.org sometimes answers 403 to CI runners for a while: retry.
+          for i in 1 2 3 4 5; do
+            dkp-pacman -Sy --noconfirm && dkp-pacman -S --noconfirm --needed libctrpf 3gxtool && exit 0
+            echo "package download failed (attempt $i), retrying in 30 s"; sleep 30
+          done
+          exit 1
 
       - name: Build
         run: bash scripts/build.sh
