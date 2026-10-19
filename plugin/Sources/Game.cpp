@@ -73,7 +73,8 @@ PlayerState Read() {
     Process::ReadFloat(s_obj + OFF_Z, s.z);
     Process::ReadFloat(s_obj + OFF_Y, s.y);
     s.valid = true;
-    ReadPlayerDir(s.dirX, s.dirY);
+    ReadPlayerDir(s.dirX, s.dirY, &s.anim);
+    s.model = PlayerModel();
     return s;
 }
 
@@ -91,6 +92,14 @@ constexpr u32 MM_MODEL  = 0x10;
 constexpr u32 MM_POS    = 0xEC;   // f32 x, z, y (record starts at 0xE8)
 constexpr u32 MM_PREV   = 0x114;  // committed copy of x, z, y
 constexpr u32 MOVING    = 0x400;
+constexpr u32 MM_ANIM   = 0x58;   // u8 animation id, set by step actions via FUN_003F1C20
+// Grid records (0x2C bytes, f32 tile x @+4, tile y @+0xC; tile = floor(world / 18)) used for
+// character-vs-character collision: previous, current and next tile. Spawn fills all three.
+// Verified: the player is blocked by a spawned trainer only at the tile these records hold.
+constexpr u32 MM_TILE_PREV = 0x64;
+constexpr u32 MM_TILE_CUR  = 0x90;
+constexpr u32 MM_TILE_NEXT = 0xBC;
+constexpr float TILE = 18.0f;
 // Facing: cos at these offsets, sin at the paired ones.
 constexpr u32 MM_COS[] = { 0x1C, 0x28, 0x34, 0x48 };
 constexpr u32 MM_SIN[] = { 0x24, 0x30, 0x3C, 0x40 };
@@ -146,13 +155,14 @@ int ListMoveModels(MoveModel* out, int max) {
     return n;
 }
 
-bool ReadPlayerDir(float& dirX, float& dirY) {
+bool ReadPlayerDir(float& dirX, float& dirY, u8* anim) {
     if (!LocateMoveModels()) return false;
     for (int i = 0; i < MOVE_MODEL_SLOTS; i++) {
         MoveModel m;
         if (ReadSlot(s_mmBase + i * MM_STRIDE, m) && m.id == PLAYER_MM_ID) {
             dirX = m.dirX;
             dirY = m.dirY;
+            if (anim) Process::Read8(m.addr + MM_ANIM, *anim);
             return true;
         }
     }
@@ -176,6 +186,26 @@ bool Puppet(u32 a, float x, float z, float y, float dirX, float dirY) {
     if (Process::Read32(a + MM_FLAGS8, flags8) && !(flags8 & MOVING)) {
         Process::Write32(a + MM_FLAGS8, flags8 | MOVING);
     }
+    // Keep the collision tiles on the character, otherwise it blocks its spawn tile forever.
+    float tx = std::floor(x / TILE), ty = std::floor(y / TILE);
+    float cx = 0, cy = 0;
+    Process::ReadFloat(a + MM_TILE_CUR + 4, cx);
+    Process::ReadFloat(a + MM_TILE_CUR + 0xC, cy);
+    if (cx != tx || cy != ty) {
+        // All three on the current tile: a lagging "previous" tile would leave a ghost block.
+        for (u32 rec : { MM_TILE_PREV, MM_TILE_CUR, MM_TILE_NEXT }) {
+            Process::WriteFloat(a + rec + 4, tx);
+            Process::WriteFloat(a + rec + 0xC, ty);
+        }
+    }
+    return true;
+}
+
+bool SetAnim(u32 a, u8 anim) {
+    u32 flags4 = 0;
+    if (!IsSlot(a) || !Process::Read32(a + MM_FLAGS4, flags4) || !(flags4 & 1)) return false;
+    u8 cur = 0;
+    if (Process::Read8(a + MM_ANIM, cur) && cur != anim) Process::Write8(a + MM_ANIM, anim);
     return true;
 }
 
@@ -202,6 +232,28 @@ u16 PlayerModel() {
     u16 model = 0;
     if (p) Process::Read16(p + MM_MODEL, model);
     return model;
+}
+
+// Resident model table in the manager: u32 count @0x36C8, 0x18-byte descriptors @0x36CC
+// (u16 model @0, ..., u32 archive file index @0x14), filled by the map loader from a per-map
+// list (slot 0 = the player's model). Only models listed there have their 3D data loaded:
+// appending a descriptor ourselves spawns an invisible character (see NOTES.md).
+constexpr u32 RES_COUNT = 0x36C8;
+constexpr u32 RES_TABLE = 0x36CC;
+constexpr u32 RES_SIZE  = 0x18;
+constexpr u32 RES_MAX   = 0x20;
+
+bool IsModelResident(u16 model) {
+    u32 player = FindPlayerSlot();
+    u32 manager = 0;
+    if (!player || !Process::Read32(player + MM_MANAGER, manager) || manager < 0x08000000) return false;
+    u32 count = 0;
+    if (!Process::Read32(manager + RES_COUNT, count) || count == 0 || count > RES_MAX) return false;
+    for (u32 i = 0; i < count; i++) {
+        u16 m = 0;
+        if (Process::Read16(manager + RES_TABLE + i * RES_SIZE, m) && m == model) return true;
+    }
+    return false;
 }
 
 u32 SpawnCharacter(u16 id, u16 model, u16 tileX, u16 tileY) {

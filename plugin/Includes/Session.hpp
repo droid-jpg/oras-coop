@@ -29,6 +29,8 @@ struct Remote {
     float tx = 0, tz = 0, ty = 0; // latest received position
     float dx = 0, dz = 0, dy = 0; // smoothed display position
     float dirX = 0, dirY = 0;     // facing unit vector (0,0 = unknown, use facing)
+    u8 anim = 0;                  // sender's animation id (0 idle, 0x10 walk; 0 from old clients)
+    u16 model = 0;                // sender's player model (0xAC Brendan, 0xAB May; 0 = unknown)
     u64 lastUpdate = 0;
 };
 

@@ -177,6 +177,53 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
 - Model animation API seen in DllField `FUN_0072D500`: model vtable +0xC0 (set anim slot),
   +0x100, +0xD4 — fallback for driving clips directly.
 
+### ✅ Walk/run animation solved (2026-10-19)
+
+- **Action table**: global array at `*(0x007301AC)` (live 0x081884D0), 0x104 pointers, one
+  0x48-byte object per action code, built by DllField `FUN_0072F1E4`. Object: +0 vtable,
+  +4.. phase functions, +0x44 phase count. Action progress (+0x908) = phase index.
+- Step actions 0x0B–0x19: phase 1 picks frames-per-tile + anim, phase 2 `FUN_00774D9C`
+  interpolates, phase 3 `FUN_0072D120` ends. Each calls **`FUN_003F1C20(mm, anim)`** which just
+  sets **`mm+0x58` = animation id** (remapped through a table only if mm+0x59 < 0x17 and set).
+- Anim ids (frames per tile): 0x10 walk (7, the player's normal walk, action 0x13), 0x19 run
+  (verified visually on the player model), 0x0F (8), 0x0A (16), 0x05 (32), 0x11/0x17 (6),
+  0x18 (5), 0x14 (3–5), 0x15 (2–3), 0x16 (1). 0 = idle. Action 1 ("stand", `FUN_0072CB34`)
+  sets anim 0 every frame.
+- The "legs don't move" bug was our own per-frame `SetAction(1)` (stand) resetting the anim.
+  Spawned trainers (move type 0) get no actions from the game, so writing mm+0x58 directly
+  sticks: 0x10 → legs walk, 0 → stand. Plugin now does this per frame; the sender forwards its
+  own mm+0x58 in STATE @36, receiver falls back to speed (walk ~77 units/s, run > 105).
+- Walk speed: 18 units / 7 frames at 30 fps.
+
+### ✅ Character collision (2026-10-19)
+
+- mm has three 0x2C grid records: `+0x64` previous, `+0x90` current, `+0xBC` next tile
+  (f32 tile x @+4, tile z @+8, tile y @+0xC; tile = floor(world / 18)). Spawn fills all three
+  from the entry tile (`FUN_003F8E7C`).
+- The player is blocked by a character on the tile in these records (verified: trainer moved
+  by position only kept blocking its spawn tile; after writing its current tile the player
+  stopped right in front of it). Plugin writes all three to the current tile every frame.
+
+### Other trainer models (2026-10-19, partial)
+
+- Player model by gender (DllField `FUN_0070A614`): 0 → **0xAC Brendan**, 1 → **0xAB May**.
+  Loaded once into resident slot 0 by `FUN_003F7640` (flag manager+0x36AB) via
+  `FUN_00128E4C(manager+0x36B4, FUN_0019C678(model), manager+0x36CC)`.
+- `FUN_00128E4C(archive, file, out)` = generic synchronous "read file from archive" (60+ callers).
+  `0x0019C678` = import stub model id → archive file index.
+- Resident table: u32 count @0x36C8 (copy @0x36C4), 0x18-byte descriptors @0x36CC
+  (u16 model, flags, u32 file index @+0x14), max 0x20. Map loader `FUN_003F7728` reads the
+  per-map list file into slots 1.. (FUN_0036ED10), cleared by memset `FUN_003F6CEC` on change.
+  Littleroot house: 11 models; Littleroot outdoors: 30 (no 0xAB).
+- Tried: appending a cloned descriptor for 0xAB (file index from the stub) and spawning →
+  character exists, render objects created, but **invisible**: the 3D data is preloaded by a
+  separate model-set system (`FUN_00402FCC` / wait `FUN_00402D54`, object at zone+0x2C, list
+  file 0xE4 entries of 0x2C) only for models in the map's list. Tier 3 of FUN_003F663C needs
+  manager+0x3C20 (only reader is 0x3F67FC; never set during plain map changes).
+- Plugin now uses the friend's model only if already resident on the map, else our own.
+- Next idea: add the model to the model-set list before `FUN_00402FCC` runs (hook map load),
+  or find the model-set loader's per-model request function.
+
 DllField.cro: loaded at 0x006F3000 (header magic FIXD), code 0x006F3180+0x10EE80, name @0x00802000.
 Added to the Ghidra project as block "DllField" from a live dump (relocations already applied).
 

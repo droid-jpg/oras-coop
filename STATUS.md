@@ -1,4 +1,4 @@
-# oras-coop — status (paused 2026-10-19)
+# oras-coop — status (updated 2026-10-19)
 
 Co-op mod for **Pokémon Alpha Sapphire v1.4** on Azahar: a 3GX plugin plus a Node relay server.
 Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, function list).
@@ -12,17 +12,19 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Overlay markers / off-screen arrows | ✅ (scale is a guess — labels sit a bit off) |
 | Finding the player | ✅ player state object 0x08C6E880 (stable), vtable fallback scan |
 | **Real models** (Display → Real models) | ✅ spawns a trainer per friend with the game's own spawn fn, drives position + facing every frame, despawns cleanly |
-| Walk/run animation on spawned trainers | ❌ legs don't move yet (see below) |
-| Other trainer models (e.g. Brendan) | ❌ not tried — only the player's own model (always loaded) is safe |
+| Walk/run animation on spawned trainers | ✅ legs walk while moving, stand when stopped; sender's own clip forwarded (run = 0x19), speed fallback |
+| Player-to-player collision | ✅ you can't walk through a friend's trainer (its collision tile follows it) |
+| Friend's own trainer (Brendan vs May) | 🟡 used only where the map already has that model loaded; otherwise shown with your model |
 
-## Where the animation work stopped
+## Where the model work stopped
 
-- `FUN_003FB1B4(mm, code, dir)` sets a character action. Re-calling it every frame resets the
-  action, and code 1 is the NPC "stand" action — so that approach was removed.
-- Lead: `FUN_003FF4D0` runs actions from the **movement-command queue** (cutscene "apply
-  movement"): entry `+0x0A` code, `+0x0C` direction. Find the command table (walk/run per
-  direction, step length), then queue step commands toward the friend's position instead of
-  teleporting. Fallback: model animation vtable calls (+0xC0/+0x100/+0xD4) seen in `FUN_0072D500`.
+- Animation and collision are done (details in `re/NOTES.md`: action table, anim byte mm+0x58,
+  grid records mm+0x64/0x90/0xBC).
+- Opposite-gender model: adding a descriptor to the resident table makes the character spawn
+  but invisible — the 3D data is preloaded per map by the model-set system (`FUN_00402FCC`).
+  Next step: get the model into that map list before load (hook), or find its per-model loader.
+- Running was verified by sending clip 0x19 from the fake friend; a real running player
+  (B + circle pad) hasn't been captured yet, so check the forwarded id with two real players.
 
 ## How to pick it up
 
@@ -31,7 +33,8 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 2. Install: copy `plugin/oras-coop.3gx` to
    `%APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\`
 3. Server: `node E:\oras-coop\server\server.mjs` (port 7777). Fake friend for testing:
-   `node E:\oras-coop\tools\fakefriend.mjs --map <id> --x <x> --y <y> --radius 45`
+   `node E:\oras-coop\tools\fakefriend.mjs --map <id> --x <x> --y <y> --radius 30 --speed 0.15 --stopgo`
+   (`--anim 0x19` run clip, `--model 0xab` May, `--x2/--y2 --after N` jump to test collision)
 4. Memory tools (Azahar GDB stub, port 24689): `node E:\ORAS-RE\tools\mem.mjs`
    — `watch`, `read`, `dump`, `find-pos`, `find-u32`, `write-float/u32`, `catch-write`, `catch-break`.
 5. Ghidra project: `E:\ORAS-RE\ghidra\ORAS_AS_1_4.gpr` (code.bin + DllField block);
@@ -47,7 +50,6 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 ## Ideas queue
 
-- Walk/run animation via movement commands (above).
-- Calibrate overlay scale from real trainer positions so labels line up.
-- Spawn the opposite-gender trainer model (needs the archive-load path in `FUN_003F663C`).
+- Opposite-gender trainer model (see above).
+- Calibrate overlay scale from real trainer positions so labels line up (labels sit high/left).
 - Real 3DS hardware: `socInit` path and memory allocation are only tested on Azahar.

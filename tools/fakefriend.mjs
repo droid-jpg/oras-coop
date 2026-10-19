@@ -1,6 +1,9 @@
 // A pretend player for testing: joins a room and walks in a circle.
 // Usage: node fakefriend.mjs [--server 127.0.0.1] [--port 7777] [--room HOENN] [--name Bot]
 //                            [--map 6] [--x 1881] [--y 3141] [--radius 54] [--listen]
+//                            [--speed 0.05] [--anim 0x10] [--stopgo] [--model 0xab]
+// --speed radians per update (0.05 ~ 40 units/s at r=54), --anim the animation id sent while
+// moving (0x10 = walk), --stopgo walks 4 s then stands 2 s to test idle/walk switching.
 // --listen only prints what it receives (doesn't move).
 import net from 'node:net';
 
@@ -14,6 +17,10 @@ const opt = {
   server: args.server ?? '127.0.0.1', port: Number(args.port ?? 7777), room: args.room ?? 'HOENN',
   name: args.name ?? 'Bot', map: Number(args.map ?? 6), x: Number(args.x ?? 1881), y: Number(args.y ?? 3141),
   radius: Number(args.radius ?? 54), listen: !!args.listen,
+  speed: Number(args.speed ?? 0.05), anim: Number(args.anim ?? 0x10), stopgo: !!args.stopgo,
+  model: Number(args.model ?? 0xab), // player model sent to others: 0xAB May, 0xAC Brendan
+  // --x2/--y2 --after N: move the circle centre to (x2,y2) after N seconds (tests moved collision)
+  x2: args.x2 && Number(args.x2), y2: args.y2 && Number(args.y2), after: Number(args.after ?? 0),
 };
 
 const FRAME = 48;
@@ -52,12 +59,16 @@ sock.on('close', () => { console.log('disconnected'); process.exit(0); });
 sock.on('error', (e) => { console.error(e.message); process.exit(1); });
 
 let t = 0, seq = 0;
+const started = Date.now();
 setInterval(() => {
   if (!myId) return;
   if (opt.listen) { sock.write(frame(T.PING)); return; }
-  t += 0.05;
+  const moving = !opt.stopgo || (Date.now() / 1000) % 6 < 4;
+  if (moving) t += opt.speed;
   const s = frame(T.STATE);
-  const x = opt.x + Math.cos(t) * opt.radius, y = opt.y + Math.sin(t) * opt.radius;
+  const jumped = opt.after && Date.now() - started > opt.after * 1000;
+  const cx = jumped && opt.x2 ? opt.x2 : opt.x, cy = jumped && opt.y2 ? opt.y2 : opt.y;
+  const x = cx + Math.cos(t) * opt.radius, y = cy + Math.sin(t) * opt.radius;
   // facing: rough guess at the game's values (0 up, 3 right seen so far)
   s.writeUInt16LE(opt.map, 4);
   s.writeUInt16LE(Math.cos(t) > 0 ? 3 : 2, 6);
@@ -66,6 +77,8 @@ setInterval(() => {
   // Facing = direction of travel around the circle (tangent); east when standing still.
   const dir = opt.radius > 0 ? [-Math.sin(t), Math.cos(t)] : [1, 0];
   s.writeFloatLE(dir[0], 28); s.writeFloatLE(dir[1], 32);
+  s.writeUInt8(moving && opt.radius > 0 ? opt.anim : 0, 36);
+  s.writeUInt16LE(opt.model, 38);
   sock.write(s);
 }, 66);
 

@@ -11,6 +11,8 @@ struct PlayerState {
     float x = 0, z = 0, y = 0; // z is height
     u32 aux = 0;               // raw player+0x08, meaning unknown
     float dirX = 0, dirY = 0;  // facing unit vector from the move model (0,0 if unknown)
+    u8 anim = 0;               // player move model's animation id (mm+0x58; 0 idle, 0x10 walk)
+    u16 model = 0;             // player model id (0xAC Brendan, 0xAB May; 0 if unknown)
 };
 
 // Finds the player object (known address first, then a heap scan for its vtable).
@@ -41,8 +43,12 @@ bool LocateMoveModels();
 // Fills `out` with in-use slots. Returns the count.
 int ListMoveModels(MoveModel* out, int max);
 
-// Reads the local player's facing as a unit vector (map X/Y plane).
-bool ReadPlayerDir(float& dirX, float& dirY);
+// Reads the local player's facing as a unit vector (map X/Y plane) and animation id.
+bool ReadPlayerDir(float& dirX, float& dirY, u8* anim = nullptr);
+
+// Sets a character's animation id (mm+0x58, the byte the game's step actions set through
+// FUN_003F1C20): 0 = idle, 0x10 = walk. Only sticks on characters no action is driving.
+bool SetAnim(u32 addr, u8 anim);
 
 // Moves a move model's real model: position, facing, and the "moving" flag so the
 // game pushes the new transform. Returns false if `addr` is no longer a valid slot.
@@ -67,6 +73,15 @@ u32 FindCharacter(u16 id);
 
 // Reads the local player's model id (0 if unknown).
 u16 PlayerModel();
+
+// Player character models: Brendan 0xAC, May 0xAB (DllField FUN_0070A614, by gender).
+constexpr u16 MODEL_BRENDAN = 0xAC;
+constexpr u16 MODEL_MAY = 0xAB;
+inline bool IsPlayerModel(u16 m) { return m == MODEL_BRENDAN || m == MODEL_MAY; }
+
+// True if `model` is in the current map's resident model table, i.e. the game preloaded its
+// 3D data for this map, so SpawnCharacter can use it.
+bool IsModelResident(u16 model);
 
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);

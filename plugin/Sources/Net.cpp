@@ -159,6 +159,8 @@ void Apply(const Frame& f) {
             r.dirX = f.get<float>(28);
             r.dirY = f.get<float>(32);
             if (!std::isfinite(r.dirX) || !std::isfinite(r.dirY)) r.dirX = r.dirY = 0;
+            r.anim = f.get<u8>(36);
+            r.model = f.get<u16>(38);
             if (mapChanged) { r.dx = r.tx; r.dz = r.tz; r.dy = r.ty; }
             r.hasState = true;
             r.lastUpdate = osGetTime();
@@ -194,11 +196,13 @@ Frame MakeState(const game::PlayerState& s, u32 seq) {
     f.put<u32>(24, seq);
     f.put<float>(28, s.dirX);
     f.put<float>(32, s.dirY);
+    f.put<u8>(36, s.anim);
+    f.put<u16>(38, s.model);
     return f;
 }
 
 bool Changed(const game::PlayerState& a, const game::PlayerState& b) {
-    return a.map != b.map || a.facing != b.facing ||
+    return a.map != b.map || a.facing != b.facing || a.anim != b.anim ||
            std::fabs(a.dirX - b.dirX) > 0.02f || std::fabs(a.dirY - b.dirY) > 0.02f ||
            std::fabs(a.x - b.x) > 0.05f || std::fabs(a.y - b.y) > 0.05f || std::fabs(a.z - b.z) > 0.05f;
 }

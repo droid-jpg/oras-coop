@@ -163,7 +163,7 @@ try {
         const regs = await g.cmd('g');
         const reg = (n) => Buffer.from(regs.slice(n * 8, n * 8 + 8), 'hex').readUInt32LE(0);
         const r = [0, 1, 2, 3].map(reg);
-        console.log(`hit ${h + 1}: pc=${reg(15).toString(16)} lr=${reg(14).toString(16)} r0=${r[0].toString(16)} r1=${r[1].toString(16)} r2=${r[2].toString(16)} r3=${r[3].toString(16)}`);
+        console.log(`hit ${h + 1}: pc=${reg(15).toString(16)} lr=${reg(14).toString(16)} r4=${reg(4).toString(16)} r5=${reg(5).toString(16)} r6=${reg(6).toString(16)} r0=${r[0].toString(16)} r1=${r[1].toString(16)} r2=${r[2].toString(16)} r3=${r[3].toString(16)}`);
         const mem = await g.read(r[1], dumpLen);
         for (let i = 0; i < dumpLen; i += 16) console.log(`   ${(r[1] + i).toString(16)}  ${mem.subarray(i, i + 16).toString('hex').match(/../g).join(' ')}`);
         if (r[3] >= 0x08000000 && r[3] < 0x20000000) {
@@ -185,6 +185,10 @@ try {
     if (z !== 'OK') { console.log(`watchpoint not supported/accepted: ${JSON.stringify(z)}`); }
     else {
       const seen = new Map();
+      if (process.env.SET) { // optional: write SET (hex u32) first, then catch who changes it
+        const b = Buffer.alloc(4); b.writeUInt32LE(num(process.env.SET) >>> 0);
+        await g.cmd(`M${addr.toString(16)},4:${b.toString('hex')}`);
+      }
       let prev = (await g.read(addr, 4)).toString('hex');
       for (let h = 0; h < hits; h++) {
         const cont = g.cmd('c');
