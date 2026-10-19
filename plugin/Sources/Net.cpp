@@ -165,6 +165,7 @@ void Apply(const Frame& f) {
             u8 st = f.get<u8>(37);
             r.away = st & ST_AWAY;
             r.riding = st & ST_RIDING;
+            r.surfing = st & ST_SURFING;
             u64 now = osGetTime();
             if (mapChanged) {
                 r.dx = r.tx; r.dz = r.tz; r.dy = r.ty;
@@ -227,13 +228,14 @@ Frame MakeState(const game::PlayerState& s, u32 seq, bool away = false) {
     f.put<float>(32, s.dirY);
     f.put<u8>(36, s.anim);
     f.put<u16>(38, s.model);
-    f.put<u8>(37, (u8)((away ? ST_AWAY : 0) | (s.riding ? ST_RIDING : 0)));
+    f.put<u8>(37, (u8)((away ? ST_AWAY : 0) | (s.riding ? ST_RIDING : 0) | (s.surfing ? ST_SURFING : 0)));
     f.put<u32>(40, (u32)osGetTime()); // sender clock (ms) for receiver interpolation
     return f;
 }
 
 bool Changed(const game::PlayerState& a, const game::PlayerState& b) {
     return a.map != b.map || a.facing != b.facing || a.anim != b.anim || a.riding != b.riding ||
+           a.surfing != b.surfing ||
            std::fabs(a.dirX - b.dirX) > 0.02f || std::fabs(a.dirY - b.dirY) > 0.02f ||
            std::fabs(a.x - b.x) > 0.05f || std::fabs(a.y - b.y) > 0.05f || std::fabs(a.z - b.z) > 0.05f;
 }

@@ -17,7 +17,8 @@ struct PlayerState {
     // and its flags have bit 0x2. During the intro the save's field is already built with the
     // player flagged 0x5; calling game functions on it then hangs the game (verified).
     bool inField = false;
-    bool riding = false;       // on a bike: player mm+0x04 has 0x01200000
+    bool riding = false;       // on a bike: player mm+0x04 has 0x01200000 (and not surfing)
+    bool surfing = false;      // surfing: player mm+0x04 has 0x10000000 (0x13210443 vs bike 0x03210443)
     bool suspended = false;    // under script control (mm+0x08 bit 0): soaring, cutscenes, battles?
 };
 
@@ -93,6 +94,9 @@ bool PlayerFieldActive();
 
 // True while the player is under script control (soaring, cutscenes); clear in menus.
 bool PlayerSuspended();
+
+// True while the player surfs (mm+0x04 bit 0x10000000; form byte mm+0x59 = 7).
+bool PlayerSurfing();
 
 // True while the player rides a bike (verified with the Mach bike; flags 0x00010443 -> 0x03210443; bits 0x01200000).
 bool PlayerRiding();

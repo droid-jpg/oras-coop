@@ -82,7 +82,8 @@ PlayerState Read() {
     ReadPlayerDir(s.dirX, s.dirY, &s.anim);
     s.model = PlayerModel();
     s.inField = s.model && PlayerFieldActive();
-    s.riding = s.inField && PlayerRiding();
+    s.surfing = s.inField && PlayerSurfing();
+    s.riding = s.inField && !s.surfing && PlayerRiding();
     s.suspended = s.inField && PlayerSuspended();
     return s;
 }
@@ -309,6 +310,13 @@ bool PlayerSuspended() {
     // mm+0x08 bit 0: set while soaring (0x2000400F) and in the intro (0x5); clear in menus.
     u32 p = FindPlayerSlot(), flags8 = 0;
     return p && Process::Read32(p + MM_FLAGS8, flags8) && (flags8 & 1);
+}
+
+constexpr u32 SURFING = 0x10000000;  // player mm+0x04 while surfing (also has the bike bits)
+
+bool PlayerSurfing() {
+    u32 p = FindPlayerSlot(), flags4 = 0;
+    return p && Process::Read32(p + MM_FLAGS4, flags4) && (flags4 & SURFING);
 }
 
 bool PlayerRiding() {

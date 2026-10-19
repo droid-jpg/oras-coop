@@ -134,7 +134,8 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
     for (int id = 1; id <= MAX_ID; id++) {
         Spawned& s = s_spawned[id];
         const Remote& r = remotes[id];
-        bool want = enabled && id != myId && r.active && r.hasState && r.map == me.map &&
+        // Surfing: no water mount for spawned characters yet, so no trainer standing on the sea.
+        bool want = enabled && id != myId && r.active && r.hasState && !r.surfing && r.map == me.map &&
                     now - r.lastUpdate < STALE_MS;
 
         if (!want) {
@@ -165,6 +166,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         if (s.solid && sameTile) s.solid = false;
         else if (!s.solid && d2 > OVERLAP_OUT * OVERLAP_OUT) s.solid = true;
         if (!game::Puppet(s.mm, r.dx, r.dz, r.dy, dx, dy, s.solid)) { Forget(s); continue; } // slot reclaimed
+        // Bikes: no bike model on other characters yet (see NOTES.md), so they run instead.
         game::SetAnim(s.mm, PickAnim(s, r, now));
     }
 }

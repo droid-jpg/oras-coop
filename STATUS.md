@@ -16,10 +16,10 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Walk/run animation on spawned trainers | ✅ walk 0x10 / run 0x19 (verified with a real running player), stand when stopped |
 | Player-to-player collision | ✅ you can't walk through a friend's trainer; it stops blocking while it shares your tile (else you'd be trapped), tested with two real players |
 | Two players on one PC | ✅ two Azahar windows on the relay: see each other, walk, map changes, collision, chat |
-| Friend on a bike | 🟡 listed as "(bike)" and their trainer runs; no bike model under them yet (the bike is a separate object) |
+| Friend on a bike | 🟡 listed as "(bike)" and their trainer runs; no bike model yet — the game's mount routine is mapped (re/NOTES.md) but attaching it to another character didn't show a bike |
 | Friend soaring / in a long cutscene | ✅ shown as "Name (busy)", standing at their takeoff spot; back to normal on landing |
 | Friend in a battle | ✅ wild battle on Route 110: friends see "Name (busy)"; your own overlay hides during battles, dialogs and prompts |
-| Friend surfing | ❓ untested: the completed save's party has no Surf user |
+| Friend surfing | ✅ "(surfing)" in the list and a water marker that follows them — no trainer standing on the sea; back to a trainer on land |
 | Friend's own trainer (Brendan vs May) | ✅ the map loader is hooked to load their model on every map change; a friend who joins mid-map shows as the rival model (Littleroot) or yours until the next map change |
 | Intro / title screen | ✅ nothing is spawned or drawn until the field is live (spawning during the intro used to hang the game) |
 | Towns and routes | ✅ (a wrong "field is live" check had stopped syncing on routes; fixed) |

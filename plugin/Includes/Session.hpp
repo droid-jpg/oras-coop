@@ -47,6 +47,7 @@ struct Remote {
     u16 model = 0;                // sender's player model (0xAC Brendan, 0xAB May; 0 = unknown)
     bool away = false;            // in a battle / soaring / cutscene: not on the field
     bool riding = false;          // on a bike
+    bool surfing = false;         // surfing (no water mount for other characters yet: marker only)
     u64 lastUpdate = 0;
 };
 

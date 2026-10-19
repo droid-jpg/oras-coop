@@ -262,7 +262,19 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
   0x5. 0x4000 (first guess) is clear on routes — that broke all syncing outside towns.
 - **Wild battle** (Route 110 grass): bit 0 (script control) is set, so friends see "busy" after
   2 s; our own overlay is hidden during it. Fleeing clears it.
-- Surf not testable with this party (no Surf user: "The water is deep, deep blue.").
+- **Surfing** (Route 109): player mm+0x04 0x00010443 → **0x13210443** (bit 0x10000000 + the bike
+  bits), form mm+0x59 = 7, anim 0x54, mm+0x8A4 changes (attached sea mount?). Plugin: friends who
+  surf get a water marker + "(surfing)", no trainer standing on the sea; back on land = trainer.
+- **Bike mount** = DllField `FUN_007980BC` (controller r4 0x082C66E0; +8 manager, +0xC mm):
+  `FUN_003F5C2C(manager, mm, 0x1B, 0)` until non-zero → `FUN_003F31EC(mm, 2)` (form) →
+  `FUN_003F1C20(mm, 0)` → `SetAction(mm, 0x51, facing)` → `FUN_00783648(manager+0x36C0, 0xB, mm)`
+  (effect) → flags 0x200000, 0x1000000, render-dependent 0x2000000 + render+0x140 |= 0x400 →
+  `FUN_003F9C08(mm, 2)` (mm+0xA2C ride mode). Dismount step `FUN_00795A60`: anim 0, ride mode 1.
+- `FUN_003F5C2C(manager, mm, ride, slot)`: ride-model pool at manager+0x36BC (status 3 = loaded →
+  attach to the model instance `FUN_004E3F90(mm)`); returns 1 also on non-attach paths.
+- Tried on a friend's trainer: call it + form 2 + ride mode 2 → form stuck at 2, ride mode back
+  to 1, **no bike visible**. Needs the import stubs inside FUN_003F5C2C resolved live (slot
+  query / attach targets). Reverted: friends on bikes show the run clip.
 - Registered items wheel (Y): left Mach bike, right Eon Flute, up/down rods; pick with the D-pad.
 - GDB caution: a `mem.mjs` call killed by `timeout` can leave the emulator halted → the
   game freezes and the relay drops the player; `scratchpad/resume.mjs` sends c + D.

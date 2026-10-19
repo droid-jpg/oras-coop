@@ -168,7 +168,13 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
 
     bool onScreen = sx >= 8 && sx < TOP_W - 8 && sy >= 20 && sy < TOP_H - 8;
     if (onScreen) {
-        if (!IsPuppeted(id)) {
+        if (r.surfing) {
+            // Surfing: ripples on the water and a head-and-shoulders marker in their colour.
+            Rect(s, sx - 10, sy - 2, 20, 2, Color(220, 240, 255, 200));
+            Rect(s, sx - 7, sy + 2, 14, 2, Color(170, 210, 255, 170));
+            Rect(s, sx - 4, sy - 12, 8, 10, col);
+            Rect(s, sx - 4, sy - 12, 8, 10, Color::Black, false);
+        } else if (!IsPuppeted(id)) {
             // Ground shadow + body marker at the player's feet (a real NPC stands in otherwise).
             Rect(s, sx - 6, sy - 1, 12, 3, Color(0, 0, 0, 110));
             Rect(s, sx - 4, sy - 22, 8, 21, col);
@@ -232,7 +238,7 @@ void DrawBottom(const Screen& s) {
         bool same = Visible(r, v.me);
         bool sameMap = r.hasState && v.me.valid && r.map == v.me.map; // "here" even while we're busy
         char buf[48];
-        const char* bike = r.riding ? " (bike)" : "";
+        const char* bike = r.surfing ? " (surfing)" : r.riding ? " (bike)" : "";
         if (!r.hasState) snprintf(buf, sizeof buf, "%s  (loading)", r.name);
         else if (r.away) snprintf(buf, sizeof buf, "%s  (busy)", r.name); // battle, soaring...
         else if (sameMap) snprintf(buf, sizeof buf, "%s  here%s", r.name, bike);
