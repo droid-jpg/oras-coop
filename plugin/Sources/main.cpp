@@ -239,7 +239,7 @@ void OnProcessExit() {
 int main() {
     g_session.cfg.Load();
 
-    PluginMenu* menu = new PluginMenu("oras-coop", 0, 1, 0,
+    PluginMenu* menu = new PluginMenu("oras-coop", 0, 2, 0,
         "See your friends in Hoenn.\nAlpha Sapphire 1.4. Read-only unless\n\"Real models\" is turned on.");
     menu->SynchronizeWithFrame(true);
 
