@@ -225,6 +225,13 @@ Not yet verified: walk animation, facing correctness, label alignment (overlay s
   (work+0x13140, index model+0x3FA6). **0x7A = rival**, in this save → file 0x13A = May
   (verified visually). Resident wherever the story shows the rival (Littleroot). Plugin uses it
   as a fallback for a May friend who joined mid-map.
+- **Any model's descriptor (2026-10-20, verified)**: `FUN_0019C678(model)` → descriptor file (-1 =
+  none; 0x00146078, which Ghidra shows as the "thunk", is the abort routine), then
+  `FUN_00128E4C(*(manager+0x36B4), file, out)` reads the 0x18 bytes; same as romfs `a/0/2/2[model]`
+  (checked for 0x13C). Called from the plugin on the plain field. Descriptor byte 2 = 1 for player
+  models (0xAB, 0xAC, NPC copies 0x13A May / 0x13B Brendan). A model appended this way at map load
+  renders and animates (0x13C, a cyclist). **Battles don't rerun the list loader**: only a map
+  change or Continue loads newly wanted models.
 - Dead ends: `FUN_00402FCC`/`FUN_00402D88` = area/terrain loader, not characters; manager+0x3C20
   (tier-3 "load allowed" flag) never set during map changes.
 
@@ -475,7 +482,13 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
   at 0x587694). Trainer battles: ids 3000..6999 → **file 81**. Its battle wrapper calls
   `_CallTrainerBattleCore(0, trainerId, 0, 0, 0, 0, 0)` and goes straight on to
   `_BattleGetResult(&buf)`: the script resumes once the battle is over. Result word 0 = lost → the
-  script calls **`CallTrainerLose`** (the whiteout); a script that doesn't call it never whites out.
+  script calls **`CallTrainerLose`**.
+- **Correction (2026-10-20, seen in game): the battle event whites out by itself.** Battle event
+  vtable 0x005DEF8C, update **`FUN_003DB1F0`**, state 5 after the battle: `FUN_003DABD8` = lost, and
+  unless event+0x2B is set it calls `FUN_0044C768` (whiteout) and ends. event+0x2B is set only by
+  `_CallTrainerBattleCore` **flags bit 4** (FUN_003DA118, which also sets setup+0xA8 |= 0x100): a
+  battle you may lose. Losing a friend battle with flags 0 stopped the emulation as the battle
+  ended (the whiteout ran under our talk script). The talk script now passes flags 4.
 - Request: `+0x16` file, `+0x10` native mask (`*(0x587BF4 + file*4)`: 0x643 for both file 46 and
   81, so our Surf-template request can call the battle natives too), `+0x18` per-file value.
 - **Trainer data `a/0/3/6`** (950 × 24 bytes): u16 @0 flags, u16 @2 class, u8 @6 battle type

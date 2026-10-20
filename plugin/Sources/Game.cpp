@@ -2,6 +2,7 @@
 #include "Game.hpp"
 #include <CTRPluginFramework.hpp>
 #include <cmath>
+#include <cstring>
 
 using namespace CTRPluginFramework;
 
@@ -370,6 +371,30 @@ static u32 FindResident(u16 model) {
 }
 
 bool IsModelResident(u16 model) { return FindResident(model) != 0; }
+
+// The game's own descriptor read, as FUN_003F7640 does it for the player's model and FUN_003F7578
+// for variable models: FUN_0019C678(model) -> descriptor file (-1 = none), then the synchronous
+// read FUN_00128E4C(*(manager+0x36B4), file, out).
+constexpr u32 FN_MODEL_FILE = 0x0019C678;
+constexpr u32 FN_READ_FILE = 0x00128E4C;
+constexpr u32 MGR_MODEL_ARCHIVE = 0x36B4;
+
+bool ReadModelDescriptor(u16 model, u32* out) {
+    if (!model || model >= MODEL_LIMIT || !FieldModuleLoaded()) return false;
+    u32 player = FindPlayerSlot(), manager = 0, archive = 0;
+    if (!player || !Process::Read32(player + MM_MANAGER, manager) || manager < 0x08000000 ||
+        !Process::Read32(manager + MGR_MODEL_ARCHIVE, archive) || !archive)
+        return false;
+    s32 file = reinterpret_cast<s32 (*)(u32)>(FN_MODEL_FILE)(model);
+    if (file < 0) return false;
+    static u32 buf[16]; // descriptor files are 0x18 bytes
+    std::memset(buf, 0, sizeof buf);
+    reinterpret_cast<u32 (*)(u32, u32, u32*)>(FN_READ_FILE)(archive, (u32)file, buf);
+    if (!buf[5] || buf[5] >= 0x1000) return false; // no model file in it
+    buf[0] = (buf[0] & 0xFFFF0000) | model;        // as FUN_003F7578 does
+    std::memcpy(out, buf, RES_SIZE);
+    return true;
+}
 
 bool RivalIsMay() {
     u32 d = FindResident(MODEL_RIVAL), file = 0;

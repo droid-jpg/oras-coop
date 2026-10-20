@@ -290,6 +290,14 @@ void Apply(const Frame& f) {
             Remote& r = g_session.remotes[id];
             r.active = true;
             bool mapChanged = !r.hasState || r.map != f.get<u16>(4);
+            u8 st = f.get<u8>(37);
+            if (mapChanged && r.hasState) { // where they left the old map (the overlay learns the warp)
+                r.warpSeq++;
+                r.warpOk = !r.noWarp && !(st & ST_NO_WARP);
+                r.warpFrom = r.map;
+                r.fromX = r.tx; r.fromZ = r.tz; r.fromY = r.ty;
+                r.arriveX = f.get<float>(8); r.arriveZ = f.get<float>(12); r.arriveY = f.get<float>(16);
+            }
             r.map = f.get<u16>(4);
             r.facing = f.get<u16>(6);
             r.tx = f.get<float>(8);
@@ -300,10 +308,10 @@ void Apply(const Frame& f) {
             if (!std::isfinite(r.dirX) || !std::isfinite(r.dirY)) r.dirX = r.dirY = 0;
             r.anim = f.get<u8>(36);
             r.model = f.get<u16>(38);
-            u8 st = f.get<u8>(37);
             r.away = st & ST_AWAY;
             r.riding = st & ST_RIDING;
             r.surfing = st & ST_SURFING;
+            r.noWarp = st & ST_NO_WARP;
             if (!r.away) r.battle = game::BattleState(); // back on the field
             u64 now = osGetTime();
             if (mapChanged) {
@@ -389,7 +397,7 @@ void Apply(const Frame& f) {
     }
 }
 
-Frame MakeState(const game::PlayerState& s, u32 seq, bool away = false) {
+Frame MakeState(const game::PlayerState& s, u32 seq, bool away, bool noWarp) {
     Frame f(T_STATE);
     f.put<u16>(4, s.map);
     f.put<u16>(6, s.facing);
@@ -402,7 +410,8 @@ Frame MakeState(const game::PlayerState& s, u32 seq, bool away = false) {
     f.put<float>(32, s.dirY);
     f.put<u8>(36, s.anim);
     f.put<u16>(38, s.model);
-    f.put<u8>(37, (u8)((away ? ST_AWAY : 0) | (s.riding ? ST_RIDING : 0) | (s.surfing ? ST_SURFING : 0)));
+    f.put<u8>(37, (u8)((away ? ST_AWAY : 0) | (s.riding ? ST_RIDING : 0) | (s.surfing ? ST_SURFING : 0) |
+                       (noWarp ? ST_NO_WARP : 0)));
     f.put<u32>(40, (u32)osGetTime()); // sender clock (ms) for receiver interpolation
     return f;
 }
@@ -429,7 +438,8 @@ void RunSession(const Config& cfg) {
     if (!conn.Send(hello)) { SetStatus(NetStatus::Failed, "Send failed"); return; }
 
     game::PlayerState last; // last state sent from the live field
-    bool wasBusy = false;
+    bool wasBusy = false, wasNoWarp = false;
+    WarpGuard warpGuard;
     u64 suspendedSince = 0;
     u64 lastSend = 0;
     u32 seq = 0;
@@ -491,13 +501,17 @@ void RunSession(const Config& cfg) {
         if (live && s.suspended) { if (!suspendedSince) suspendedSince = now; }
         else suspendedSince = 0;
         bool busy = live ? suspendedSince && now - suspendedSince >= BUSY_AFTER_MS : last.valid;
+        warpGuard.Update(s, now);
+        bool noWarp = warpGuard.NoWarp(now);
         if (live || last.valid) {
             const game::PlayerState& out = live ? s : last; // off the field: our last field spot
-            if (busy != wasBusy || (Changed(out, last) && since >= STATE_INTERVAL_MS) || since >= IDLE_INTERVAL_MS) {
-                if (!conn.Send(MakeState(out, ++seq, busy))) break;
+            if (busy != wasBusy || noWarp != wasNoWarp || (Changed(out, last) && since >= STATE_INTERVAL_MS) ||
+                since >= IDLE_INTERVAL_MS) {
+                if (!conn.Send(MakeState(out, ++seq, busy, noWarp))) break;
                 if (live) last = s;
                 lastSend = now;
                 wasBusy = busy;
+                wasNoWarp = noWarp;
             }
         } else if (since >= IDLE_INTERVAL_MS) {
             if (!conn.Send(Frame(T_PING))) break;

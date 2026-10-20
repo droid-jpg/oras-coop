@@ -48,6 +48,7 @@ enum : u8 {
     ST_AWAY = 1 << 0,   // busy: script control 2+ s (soaring, battle...) or off the field (last spot)
     ST_RIDING = 1 << 1, // on a bike
     ST_SURFING = 1 << 2, // surfing
+    ST_NO_WARP = 1 << 3, // a map change now isn't a walk through a door/edge (Fly, Escape Rope, whiteout...)
 };
 
 struct Frame {

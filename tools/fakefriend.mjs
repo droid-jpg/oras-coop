@@ -7,6 +7,8 @@
 // --listen only prints what it receives (doesn't move). --busy sends the busy bit (as in a cutscene)
 // while walking; --battle also sends a made-up battle (T_BATTLE) whose HP ticks down.
 // --events sends a catch, an evolution and a badge (T_EVENT) a few seconds after joining.
+// --map2 <id> --after N walks through a "door" to map <id> after N seconds (at --x2/--y2); --nowarp
+// sets the STATE "no warp" bit (as if it flew) so friends don't learn that as a door.
 // --party <file> answers party requests (T_PARTY, for battling us) with the party in <file>
 // (1..6 Pokemon of 0x104 bytes: encrypted data + party stats, e.g. from tools/dumpparty.mjs).
 import net from 'node:net';
@@ -26,6 +28,8 @@ const opt = {
   // --x2/--y2 --after N: move the circle centre to (x2,y2) after N seconds (tests moved collision)
   busy: !!args.busy, battle: !!args.battle,
   x2: args.x2 && Number(args.x2), y2: args.y2 && Number(args.y2), after: Number(args.after ?? 0),
+  // --map2 <id>: with --after N, walk through a 'door' to map <id> after N seconds (at x2/y2 if given)
+  map2: args.map2 && Number(args.map2),
 };
 
 const FRAME = 48;
@@ -53,7 +57,7 @@ sock.on('data', (d) => {
       case T.JOIN: names[id] = cstr(f, 4, 16); console.log(`join #${id} ${names[id]}`); break;
       case T.LEAVE: console.log(`leave #${id} ${names[id] ?? ''}`); break;
       case T.STATE:
-        if (opt.listen) console.log(`state #${id} ${names[id] ?? ''} map=${f.readUInt16LE(4)} facing=${f.readUInt16LE(6)} x=${f.readFloatLE(8).toFixed(2)} y=${f.readFloatLE(16).toFixed(2)} anim=0x${f[36].toString(16)} model=0x${f.readUInt16LE(38).toString(16)} t=${f.readUInt32LE(40)}`);
+        if (opt.listen) console.log(`state #${id} ${names[id] ?? ''} map=${f.readUInt16LE(4)} facing=${f.readUInt16LE(6)} x=${f.readFloatLE(8).toFixed(2)} y=${f.readFloatLE(16).toFixed(2)} z=${f.readFloatLE(12).toFixed(2)} st=${f[37]} anim=0x${f[36].toString(16)} model=0x${f.readUInt16LE(38).toString(16)} t=${f.readUInt32LE(40)}`);
         break;
       case T.CHAT: console.log(`chat #${id} ${names[id] ?? ''}: ${cstr(f, 4, 40)}`); break;
       case T.TALK: console.log(`talk #${id} ${names[id] ?? ''} -> #${f[4]}`); break;
@@ -83,7 +87,7 @@ setInterval(() => {
   const cx = jumped && opt.x2 ? opt.x2 : opt.x, cy = jumped && opt.y2 ? opt.y2 : opt.y;
   const x = cx + Math.cos(t) * opt.radius, y = cy + Math.sin(t) * opt.radius;
   // facing: rough guess at the game's values (0 up, 3 right seen so far)
-  s.writeUInt16LE(opt.map, 4);
+  s.writeUInt16LE(jumped && opt.map2 ? opt.map2 : opt.map, 4);
   s.writeUInt16LE(Math.cos(t) > 0 ? 3 : 2, 6);
   s.writeFloatLE(x, 8); s.writeFloatLE(opt.z, 12); s.writeFloatLE(y, 16);
   s.writeUInt32LE(++seq, 24);
@@ -92,7 +96,8 @@ setInterval(() => {
   s.writeFloatLE(dir[0], 28); s.writeFloatLE(dir[1], 32);
   s.writeUInt8(moving && opt.radius > 0 ? opt.anim : 0, 36);
   s.writeUInt16LE(opt.model, 38);
-  s.writeUInt8(opt.busy || opt.battle ? 1 : 0, 37); // status bit 0: busy
+  // status bit 0: busy; bit 3 (--nowarp): a map change now is Fly/Escape Rope, not a door
+  s.writeUInt8((opt.busy || opt.battle ? 1 : 0) | (args.nowarp ? 8 : 0), 37);
   s.writeUInt32LE(Date.now() >>> 0, 40); // sender clock (ms), lets receivers interpolate
   sock.write(s);
 }, 66);

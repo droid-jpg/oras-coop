@@ -10,8 +10,12 @@ Install
 2. Double-click "Install oras-coop.bat" and answer the questions
    (your name, the server address, a room code).
 3. Start Alpha Sapphire in Azahar. Press SELECT in game for the oras-coop menu.
-4. Walk up to a friend and press A to talk. They also ask if you want to trade:
-   say Yes, pick a Pokemon, and the friend answers by talking to you.
+4. Walk up to a friend and press A to talk: Battle (their team, under their
+   name; losing is fine, your party is put back afterwards) or Trade (pick a
+   Pokemon, and the friend answers by talking to you).
+5. SELECT > Send chat > "/who" lists who's online and where. A friend inside a
+   building shows up as "Name is inside" on its door once someone has walked
+   through it.
 
 The installer copies the plugin to
   %APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\

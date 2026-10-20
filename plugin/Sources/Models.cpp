@@ -1,10 +1,16 @@
-// Friends' own trainer models (Brendan/May). Only models in the map's resident list get their
-// 3D data loaded, and the list is built while a map loads. We wrap the list loader
-// (FUN_003F7728) and, the moment it starts a new map's list, append descriptors for the
-// player models our friends use — the game then loads them like any other map NPC.
+// Friends' own trainer models. Only models in the map's resident list get their 3D data loaded,
+// and the list is built while a map loads. We wrap the list loader (FUN_003F7728) and, the moment
+// it starts a new map's list, append descriptors for the models our friends use — the game then
+// loads them like any other map NPC.
 // Verified on AS 1.4: a May trainer added this way is fully visible and animated.
+//
+// Brendan/May have known descriptors. Any other model (another outfit, a game whose player model
+// was swapped) gets its descriptor from the game's own descriptor archive, read ahead of time on
+// the plain field (PrepareWantedModels), never inside the loader while its list read is running.
 #include <3ds.h>
 #include <CTRPluginFramework.hpp>
+#include <cstdio>
+#include <cstring>
 #include "Game.hpp"
 
 using namespace CTRPluginFramework;
@@ -32,27 +38,79 @@ void MakeDescriptor(u16 model, u32* d) {
     d[5] = model;
 }
 
-volatile u32 s_wanted = 0; // bit 0 = May, bit 1 = Brendan; written by the game thread only
+// Descriptors read from the game (models other than Brendan/May). Game thread only.
+struct Cached {
+    u16 model = 0;
+    bool ok = false;           // read; false + model set = the game has none (don't retry)
+    u32 d[RES_SIZE / 4];
+};
+constexpr int CACHE = 8;
+Cached s_cache[CACHE];
+int s_cacheNext = 0;
+
+// What the loader hook appends, in priority order, with each descriptor (game thread only).
+struct Wanted {
+    int count = 0;
+    u16 model[MAX_WANTED_MODELS];
+    u32 d[MAX_WANTED_MODELS][RES_SIZE / 4];
+};
+Wanted s_wanted;
 Hook s_hook;
+
+const Cached* FindCached(u16 model) {
+    for (const Cached& c : s_cache) if (c.model == model) return &c;
+    return nullptr;
+}
+
+// Descriptors read before are kept on the SD card (0x18 bytes each, next to the plugin), so a
+// friend's outfit is loaded from the first map after Continue: that map loads before we could
+// read anything from the game.
+const char* const CACHE_PATH = "oras-coop-models.bin";
+
+void LoadCacheFile() {
+    File f(CACHE_PATH, File::READ);
+    if (!f.IsOpen()) return;
+    u32 d[RES_SIZE / 4];
+    u32 entries = (u32)f.GetSize() / RES_SIZE; // File::Read doesn't fail at the end of the file
+    for (u32 e = 0; e < entries && s_cacheNext < CACHE && f.Read(d, RES_SIZE) == 0; e++) {
+        u16 model = (u16)(d[0] & 0xFFFF);
+        if (!model || model >= MODEL_LIMIT || IsPlayerModel(model) || FindCached(model)) continue;
+        Cached& c = s_cache[s_cacheNext++];
+        c.model = model;
+        c.ok = true;
+        std::memcpy(c.d, d, RES_SIZE);
+    }
+    s_cacheNext %= CACHE;
+}
+
+void SaveCacheFile() {
+    File f(CACHE_PATH, File::RWC | File::TRUNCATE);
+    if (!f.IsOpen()) return;
+    for (const Cached& c : s_cache) if (c.ok) f.Write(c.d, RES_SIZE);
+}
+
+bool DescriptorFor(u16 model, u32* d) {
+    if (IsPlayerModel(model)) { MakeDescriptor(model, d); return true; }
+    const Cached* c = FindCached(model);
+    if (!c || !c->ok) return false;
+    std::memcpy(d, c->d, RES_SIZE);
+    return true;
+}
 
 void AppendWanted(u32 manager) {
     volatile u32* count = reinterpret_cast<volatile u32*>(manager + RES_COUNT);
     volatile u32* count2 = reinterpret_cast<volatile u32*>(manager + RES_COUNT2);
     u32 n = *count;
     if (n == 0 || n > RES_MAX) return;
-    const u16 models[] = { MODEL_MAY, MODEL_BRENDAN };
-    for (int b = 0; b < 2; b++) {
-        if (!(s_wanted & (1u << b)) || n >= RES_MAX) continue;
-        u16 model = models[b];
+    for (int w = 0; w < s_wanted.count && n < RES_MAX; w++) {
+        u16 model = s_wanted.model[w];
         bool present = false;
         for (u32 i = 0; i < n && !present; i++)
             present = *reinterpret_cast<volatile u16*>(manager + RES_TABLE + i * RES_SIZE) == model;
         if (present) continue;
         // Slot n is just past the list file's entries (the async read fills slots 1..n-1).
-        u32 d[RES_SIZE / 4];
-        MakeDescriptor(model, d);
         volatile u32* dst = reinterpret_cast<volatile u32*>(manager + RES_TABLE + n * RES_SIZE);
-        for (u32 i = 0; i < RES_SIZE / 4; i++) dst[i] = d[i];
+        for (u32 i = 0; i < RES_SIZE / 4; i++) dst[i] = s_wanted.d[w][i];
         n++;
     }
     *count = n;
@@ -66,11 +124,61 @@ u32 LoadListHook(u32 manager, u32 listFile) {
     return r;
 }
 
+u16 s_asked[MAX_WANTED_MODELS];
+int s_askedCount = 0;
+
 } // namespace
 
-void SetWantedModels(bool may, bool brendan) { s_wanted = (may ? 1u : 0u) | (brendan ? 2u : 0u); }
+void SetWantedModels(const u16* models, int count) {
+    if (count > MAX_WANTED_MODELS) count = MAX_WANTED_MODELS;
+    s_askedCount = count;
+    for (int i = 0; i < count; i++) s_asked[i] = models[i];
+    // Only models with a descriptor go in; the rest follow once PrepareWantedModels has read theirs.
+    Wanted w;
+    for (int i = 0; i < count; i++) {
+        if (!models[i] || models[i] >= MODEL_LIMIT) continue;
+        bool dup = false;
+        for (int k = 0; k < w.count && !dup; k++) dup = w.model[k] == models[i];
+        if (dup || !DescriptorFor(models[i], w.d[w.count])) continue;
+        w.model[w.count++] = models[i];
+    }
+    s_wanted = w;
+}
+
+void PrepareWantedModels() {
+    for (int i = 0; i < s_askedCount; i++) {
+        u16 model = s_asked[i];
+        if (!model || model >= MODEL_LIMIT || IsPlayerModel(model) || FindCached(model)) continue;
+        Cached& c = s_cache[s_cacheNext];
+        s_cacheNext = (s_cacheNext + 1) % CACHE;
+        c = Cached();
+        c.model = model;
+        c.ok = ReadModelDescriptor(model, c.d);
+        if (c.ok) SaveCacheFile();
+        return; // one read per frame
+    }
+}
+
+int DescribeWantedModels(char* out, int len) {
+    int n = 0;
+    out[0] = 0;
+    for (int i = 0; i < s_askedCount && n < len; i++) {
+        u16 m = s_asked[i];
+        const Cached* c = FindCached(m);
+        const char* st = IsPlayerModel(m) ? "" : !c ? " (not read)" : c->ok ? " (read)" : " (no descriptor)";
+        n += snprintf(out + n, len - n, "%s%X%s%s", i ? ", " : "", (unsigned)m, st, IsModelResident(m) ? " loaded" : "");
+    }
+    return n;
+}
+
+bool ModelUsable(u16 model) {
+    if (IsPlayerModel(model)) return true;
+    const Cached* c = FindCached(model);
+    return c && c->ok;
+}
 
 bool InstallModelHook() {
+    LoadCacheFile();
     s_hook.InitializeForMitm(FN_LOAD_LIST, (u32)LoadListHook);
     return s_hook.Enable() == HookResult::Success;
 }

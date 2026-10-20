@@ -49,6 +49,14 @@ struct Remote {
     bool away = false;            // in a battle / soaring / cutscene: not on the field
     bool riding = false;          // on a bike
     bool surfing = false;         // surfing (shown on the game's surf mount)
+    bool noWarp = false;          // ST_NO_WARP in their latest STATE
+    // Their last map change (T_STATE with a new map), for learning doors/warps (Overlay.cpp):
+    // they left `warpFrom` at `fromX/Z/Y` and came out at the first position on `map`.
+    u32 warpSeq = 0;              // bumped on every map change
+    bool warpOk = false;          // a walk through a door/edge (no ST_NO_WARP either side)
+    u16 warpFrom = 0;
+    float fromX = 0, fromZ = 0, fromY = 0;
+    float arriveX = 0, arriveZ = 0, arriveY = 0;
     char greeting[40] = {0};      // what they say when we talk to them (T_GREET; empty = not received)
     game::BattleState battle;     // their battle while they are in one (T_BATTLE)
     // Their party (T_PARTY), asked for when we talk to them, for battling it.
@@ -104,6 +112,7 @@ struct Session {
     bool reconnect = false;      // menu asks net thread to reconnect
     bool greetChanged = false;   // menu changed cfg.greeting: net thread re-sends it
     u8 pendingTalk = 0;          // overlay: we talked to this player (net thread sends T_TALK)
+    bool whoAsked = false;       // "/who" in chat: the overlay lists who's online as notices
     // Local player state, read from game memory by the game thread (overlay) each frame and
     // published here; the net thread only reads this copy, never game memory.
     game::PlayerState local;
@@ -122,6 +131,29 @@ struct Session {
 };
 
 extern Session g_session;
+
+// Tells map changes through doors and map edges apart from Fly, Teleport, Dig, Escape Rope,
+// soaring and whiteouts: those come from a menu, a long script or time off the field (a battle).
+// Feed it every frame (or loop); NoWarp() = the next map change shouldn't be learned as a warp.
+struct WarpGuard {
+    static constexpr u64 HOLD_MS = 5000;         // stays set this long after the cause
+    static constexpr u64 LONG_SCRIPT_MS = 2000;  // script control longer than a door's
+    static constexpr u64 OFF_FIELD_MS = 3000;    // off the field longer than a map load
+    u64 until = 0, suspendedSince = 0, lastLive = 0;
+
+    void Update(const game::PlayerState& s, u64 now) {
+        bool live = s.valid && s.inField;
+        if (live) {
+            lastLive = now;
+            if (s.suspended) { if (!suspendedSince) suspendedSince = now; }
+            else suspendedSince = 0;
+            if (s.menuOpen || (suspendedSince && now - suspendedSince >= LONG_SCRIPT_MS)) until = now + HOLD_MS;
+        } else if (lastLive && now - lastLive >= OFF_FIELD_MS) {
+            until = now + HOLD_MS;
+        }
+    }
+    bool NoWarp(u64 now) const { return now < until; }
+};
 
 // Queues a notice; the caller holds g_session.lock.
 void PushNotice(const std::string& text, u8 from = 0);

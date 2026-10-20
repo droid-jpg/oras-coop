@@ -228,6 +228,8 @@ bool StartFriendFight(int id) {
     bool ok = r.active && r.partyComplete && r.partyCount > 0;
     static u8 party[6][game::PK_SIZE];
     int count = r.partyCount;
+    char name[sizeof r.name];
+    std::memcpy(name, r.name, sizeof name);
     if (ok) std::memcpy(party, r.party, sizeof party);
     g_session.lock.Unlock();
     if (!ok) return false;
@@ -241,7 +243,7 @@ bool StartFriendFight(int id) {
     g_fight.id = id;
     g_fight.armed = true;
     g_fight.armedAt = osGetTime();
-    game::ArmFriendBattle(&party[0][0], count);
+    game::ArmFriendBattle(&party[0][0], count, name);
     return true;
 }
 
@@ -312,7 +314,7 @@ game::Dialog FriendDialog(int id) {
         };
         if (r.partyComplete && r.partyCount > 0) { // asked for when we last talked to them
             d.battleAction = action("Battle");
-            d.battleTrainer = r.model == game::MODEL_MAY ? game::TRAINER_MAY : game::TRAINER_BRENDAN;
+            d.battleTrainer = game::IsMayModel(r.model) ? game::TRAINER_MAY : game::TRAINER_BRENDAN;
         }
         d.tradeAction = action("Trade");
         action("Cancel");
@@ -619,6 +621,169 @@ void TrackDoors(const View& v) {
     }
 }
 
+// ---- Doors and warps: "Name is inside" ----
+// Every map change seen (ours, and every friend's, on any map) teaches a warp: map A at spot P
+// leads to map B, and B at the arrival spot leads back to A. A friend on another map then gets a
+// steady label on the door/edge of our map that leads toward them ("Bot is inside" when the place
+// has the same name, i.e. a building in this town; else "Bot is in Granite Cave"). Fly, Escape
+// Rope, whiteouts and the like aren't warps: the mover's WarpGuard flags those (ST_NO_WARP).
+constexpr int MAX_WARPS = 64;
+constexpr float WARP_SAME = 2.5f * TILE;   // one door: two learned spots this close are merged
+constexpr int WARP_DEPTH = 4;              // a friend up to this many doors away (house 2F...)
+
+struct Warp { u16 from = 0, to = 0; float x = 0, z = 0, y = 0; u32 used = 0; };
+Warp g_warps[MAX_WARPS];
+int g_warpCount = 0;
+u32 g_warpClock = 0;
+u32 g_warpSeen[MAX_ID + 1];
+WarpGuard g_myGuard;
+u16 g_myMap = 0xFFFF;
+float g_myX = 0, g_myZ = 0, g_myY = 0;
+bool g_myNoWarp = false;
+
+void LearnWarp(u16 from, u16 to, float x, float z, float y) {
+    if (from == to || !std::isfinite(x) || !std::isfinite(y)) return;
+    Warp* w = nullptr;
+    for (int i = 0; i < g_warpCount && !w; i++) {
+        Warp& o = g_warps[i];
+        if (o.from == from && o.to == to && std::fabs(o.x - x) < WARP_SAME && std::fabs(o.y - y) < WARP_SAME) w = &o;
+    }
+    if (!w && g_warpCount < MAX_WARPS) w = &g_warps[g_warpCount++];
+    if (!w) { // full: replace the least recently learned
+        w = &g_warps[0];
+        for (int i = 1; i < MAX_WARPS; i++) if (g_warps[i].used < w->used) w = &g_warps[i];
+    }
+    w->from = from; w->to = to; w->x = x; w->z = z; w->y = y;
+    w->used = ++g_warpClock;
+}
+
+void LearnBoth(u16 from, float fx, float fz, float fy, u16 to, float tx, float tz, float ty) {
+    LearnWarp(from, to, fx, fz, fy);
+    LearnWarp(to, from, tx, tz, ty);
+}
+
+void TrackWarps(const View& v) {
+    u64 now = osGetTime();
+    g_myGuard.Update(v.me, now);
+    if (v.me.valid && v.me.inField) {
+        // A new map: we walked from where we last stood on the old one (unless the guard was set
+        // there: Fly from a menu, a long script, time off the field).
+        if (g_myMap != 0xFFFF && v.me.map != g_myMap && !g_myNoWarp)
+            LearnBoth(g_myMap, g_myX, g_myZ, g_myY, v.me.map, v.me.x, v.me.z, v.me.y);
+        g_myMap = v.me.map;
+        g_myX = v.me.x; g_myZ = v.me.z; g_myY = v.me.y;
+        g_myNoWarp = g_myGuard.NoWarp(now);
+    }
+    for (int id = 1; id <= MAX_ID; id++) {
+        const Remote& r = v.remotes[id];
+        if (!r.active) { g_warpSeen[id] = 0; continue; }
+        if (r.warpSeq == g_warpSeen[id]) continue;
+        g_warpSeen[id] = r.warpSeq;
+        if (r.warpOk && id != v.myId) LearnBoth(r.warpFrom, r.fromX, r.fromZ, r.fromY, r.map, r.arriveX, r.arriveZ, r.arriveY);
+    }
+}
+
+// The warp on map `from` that leads toward map `target` in the fewest steps (most recently
+// learned on a tie), or -1.
+int WarpToward(u16 from, u16 target) {
+    u16 maps[MAX_WARPS + 1];
+    s16 firstHop[MAX_WARPS + 1];
+    int n = 0, head = 0;
+    maps[n] = from; firstHop[n] = -1; n++;
+    for (int depth = 0; depth < WARP_DEPTH && head < n; depth++) {
+        int end = n, best = -1;
+        for (; head < end; head++) {
+            for (int i = 0; i < g_warpCount; i++) {
+                const Warp& w = g_warps[i];
+                if (w.from != maps[head]) continue;
+                int hop = firstHop[head] >= 0 ? firstHop[head] : i;
+                if (w.to == target) {
+                    if (best < 0 || g_warps[hop].used > g_warps[best].used) best = hop;
+                    continue;
+                }
+                bool seen = false;
+                for (int k = 0; k < n && !seen; k++) seen = maps[k] == w.to;
+                if (!seen && n <= MAX_WARPS) { maps[n] = w.to; firstHop[n] = (s16)hop; n++; }
+            }
+        }
+        if (best >= 0) return best;
+    }
+    return -1;
+}
+
+void DrawWarpLabels(const Screen& s, const View& v) {
+    if (!v.me.valid || !v.me.inField) return;
+    u64 now = osGetTime();
+    // Friends grouped by the door that leads to them.
+    int door[MAX_ID + 1];
+    for (int id = 1; id <= MAX_ID; id++) {
+        const Remote& r = v.remotes[id];
+        door[id] = -1;
+        if (id == v.myId || !r.active || !r.hasState || r.map == v.me.map || now - r.lastUpdate > STALE_MS) continue;
+        if (g_notes[id].start && now - g_notes[id].start <= NOTE_MS) continue; // its leaving note is up
+        door[id] = WarpToward(v.me.map, r.map);
+    }
+    bool done[MAX_ID + 1] = {};
+    for (int id = 1; id <= MAX_ID; id++) {
+        if (door[id] < 0 || done[id]) continue;
+        const Warp& w = g_warps[door[id]];
+        std::string names;
+        int count = 0;
+        bool inside = true;
+        std::string here = PlaceOf(v.me.map), where;
+        for (int k = id; k <= MAX_ID; k++) {
+            if (door[k] != door[id]) continue;
+            done[k] = true;
+            if (count++) names += ", ";
+            names += v.remotes[k].name;
+            std::string place = PlaceOf(v.remotes[k].map);
+            if (place != here) inside = false;
+            if (where.empty()) where = place;
+        }
+        std::string text = names + (count > 1 ? " are " : " is ") + (inside ? "inside" : "in " + where);
+        float fx, fy;
+        if (!game::ProjectToTop(w.x, w.z + HEAD_HEIGHT, w.y, fx, fy)) continue;
+        int lw = TextWidth(text) + 6;
+        int x = (int)Clampf(fx - lw / 2.0f, 2, (float)(TOP_W - lw - 2)), y = (int)fy - 14;
+        if (y < 18 || y > TOP_H - 14) continue; // off-screen: no arrow, the player list says where they are
+        Rect(s, x, y, lw, 12, kBg);
+        Text(s, text, x + 3, y + 1, kPlayerColors[id]);
+    }
+}
+
+// ---- "/who" ----
+// Lists who's online and where, as notices (asked for from the chat menu).
+void ListWho(const View& v) {
+    g_session.lock.Lock();
+    bool asked = g_session.whoAsked;
+    g_session.whoAsked = false;
+    g_session.lock.Unlock();
+    if (!asked) return;
+    std::string lines[MAX_ID];
+    u8 from[MAX_ID];
+    int n = 0;
+    for (int id = 1; id <= MAX_ID; id++) {
+        const Remote& r = v.remotes[id];
+        if (id == v.myId || !r.active) continue;
+        std::string where = !r.hasState ? "starting the game"
+                          : v.me.inField && r.map == v.me.map ? "here" : PlaceOf(r.map);
+        if (r.hasState && r.away) where += " (busy)";
+        else if (r.surfing) where += " (surfing)";
+        else if (r.riding) where += " (bike)";
+        lines[n] = std::string(r.name) + ": " + where;
+        from[n++] = (u8)id;
+    }
+    g_session.lock.Lock();
+    if (v.status != NetStatus::Connected) PushNotice("Not connected: " + v.statusText);
+    else if (!n) PushNotice("Nobody else is online in " + v.room + ".");
+    else {
+        PushNotice(std::to_string(n + 1) + " online in " + v.room + ": you and " + std::to_string(n) +
+                   (n == 1 ? " friend" : " friends"));
+        for (int i = 0; i < n; i++) PushNotice(lines[i], from[i]);
+    }
+    g_session.lock.Unlock();
+}
+
 void DrawNotes(const Screen& s, const View& v) {
     u64 now = osGetTime();
     for (int id = 1; id <= MAX_ID; id++) {
@@ -825,6 +990,8 @@ void DrawTop(const Screen& s) {
     const View& v = g_view;
     UpdateTalk(v);
     TrackDoors(v);
+    TrackWarps(v);
+    ListWho(v);
     UpdatePuppets(v.puppets, v.me, v.remotes, v.myId, g_talk.open ? g_talk.id : 0);
     FinishTrade(v);
     UpdateFriendFight(v);
@@ -840,6 +1007,7 @@ void DrawTop(const Screen& s) {
         if (id != v.myId && Visible(v.remotes[id], v.me)) DrawMarker(s, id, v.remotes[id], v);
     }
     DrawNotes(s, v);
+    DrawWarpLabels(s, v);
     if (g_talk.open && !g_talk.native) DrawTalkBox(s, g_talk, kPlayerColors[g_talk.id]);
 }
 

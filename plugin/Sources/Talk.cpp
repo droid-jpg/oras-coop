@@ -72,6 +72,8 @@ constexpr u32 LINE_ACTION = 0x7C00, LINE_ANSWER = 0x7D00, LINE_SLOT = 0x7E00; //
 // ListMenuStart_Seq stores the choice there too (literal 0x0074A4CC; B = 0xFFFF).
 constexpr u32 WORK_ANSWER = 0x8010;
 
+constexpr u32 BATTLE_CAN_LOSE = 4;           // _CallTrainerBattleCore flags: no whiteout on a loss
+
 // Native name hashes: h = c ^ (h * 0x83) over the name (FUN_00505B04). GetWork's name isn't in
 // DllField's table; the Surf script calls it with 0x8010 right after YesNoWin_Seq.
 enum Native : u32 { N_TALK_MSG, N_WIN_READY, N_SUSPEND, N_KEY_WAIT, N_CLOSE, N_YESNO, N_GET_WORK,
@@ -90,7 +92,7 @@ constexpr u32 NATIVE_HASH[NATIVES] = {
     0x75321BA3, // ListMenuInit_Seq(x, y, ?, B cancels, ?, ?) (DllField 0x748BB8)
     0x7903FD3E, // ListMenuAdd(line, value, other message file?) (0x744F34)
     0x5CB69D67, // ListMenuStart_Seq(): 0 until chosen (0x74A388)
-    0x0B144EC1, // _CallTrainerBattleCore(0, trainer, 0, flags 0, 0, 0, 0): as trainer scripts (common
+    0x0B144EC1, // _CallTrainerBattleCore(0, trainer, 0, flags, 0, 0, 0): as trainer scripts (common
                 // script file 81) call it; the script resumes once the battle is over (0x74E588)
 };
 
@@ -215,7 +217,10 @@ void BuildMenu(Asm& a, const Dialog& d) {
         a.waitPrinted();
         a.keyWait();
         a.close();
-        const u32 args[7] = { 0, 0, 0, 0, 0, d.battleTrainer, 0 }; // pushed last to first
+        // Flag 4 = a battle you may lose: the battle event (FUN_003DB1F0, state 5) whites the player
+        // out after a loss unless event+0x2B is set, and only this flag sets it (FUN_003DA118).
+        // Without it, losing to a friend ran the whiteout under our script and the game stopped.
+        const u32 args[7] = { 0, 0, 0, BATTLE_CAN_LOSE, 0, d.battleTrainer, 0 }; // pushed last to first
         for (u32 v : args) { a.op(OP_PUSH_C); a.op(v); }
         a.sysreq(N_TRAINER_BATTLE, 7);
         a.op(OP_ZERO_PRI);

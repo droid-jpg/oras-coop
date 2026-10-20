@@ -1,5 +1,6 @@
 // oras-coop: see friends in Hoenn. Alpha Sapphire 1.4, read-only.
 #include <3ds.h>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -75,7 +76,8 @@ void MenuName(MenuEntry*) {
 }
 
 void MenuChat(MenuEntry*) {
-    static const char* presets[] = { "Hi!", "Follow me", "Wait here", "Battle?", "Trade?", "GG", "brb" };
+    static const char* presets[] = { "Hi!", "Follow me", "Wait here", "Battle?", "Trade?", "GG", "brb",
+                                     "/who" };
     Keyboard kb("Send a message:");
     std::vector<std::string> options = { ">> Type your own <<" };
     for (auto p : presets) options.push_back(p);
@@ -89,9 +91,16 @@ void MenuChat(MenuEntry*) {
     } else {
         return;
     }
+    std::string cmd = text;
+    while (!cmd.empty() && cmd.back() == ' ') cmd.pop_back();
+    for (char& c : cmd) c = (char)std::tolower((unsigned char)c);
     g_session.lock.Lock();
-    g_session.pendingChat = text;
-    coop::PushNotice("You: " + text, g_session.myId);
+    if (cmd == "/who") {
+        g_session.whoAsked = true; // not sent: the overlay lists who's online and where
+    } else {
+        g_session.pendingChat = text;
+        coop::PushNotice("You: " + text, g_session.myId);
+    }
     g_session.lock.Unlock();
 }
 
@@ -215,11 +224,12 @@ void MenuStatus(MenuEntry*) {
                       "  room " + g_session.cfg.room + "  as " + g_session.cfg.name;
     g_session.lock.Unlock();
 
-    char buf[256];
+    char buf[384], models[160];
+    game::DescribeWantedModels(models, sizeof models);
     if (s.valid) {
-        snprintf(buf, sizeof buf, "Player object: %08lX\nMap %u  facing %u\nX %.2f  Y %.2f  height %.2f\nTile %d, %d",
+        snprintf(buf, sizeof buf, "Player object: %08lX\nMap %u  facing %u\nX %.2f  Y %.2f  height %.2f\nTile %d, %d\nModels: %s",
                  (unsigned long)game::ObjectAddress(), (unsigned)s.map, (unsigned)s.facing,
-                 s.x, s.y, s.z, (int)(s.x / 18.0f), (int)(s.y / 18.0f));
+                 s.x, s.y, s.z, (int)(s.x / 18.0f), (int)(s.y / 18.0f), models);
     } else {
         snprintf(buf, sizeof buf, "Player object: not found\n(are you in the overworld?)");
     }
@@ -244,7 +254,7 @@ int main() {
     menu->SynchronizeWithFrame(true);
 
     *menu += new MenuEntry("Status", nullptr, MenuStatus);
-    *menu += new MenuEntry("Send chat", nullptr, MenuChat);
+    *menu += new MenuEntry("Send chat", nullptr, MenuChat, "\"/who\" lists who's online and where.");
     *menu += new MenuEntry("Your greeting", nullptr, MenuGreeting,
                            "What friends see when they walk up to you and press A.");
 

@@ -9,6 +9,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 |---|---|
 | Relay server (`server/server.mjs`) | ✅ rooms, IDs stamped server-side, STATE/CHAT/JOIN/LEAVE/BATTLE/TRADE, timeouts |
 | Plugin connects, status HUD, chat, player list, radar | ✅ tested in Azahar |
+| `/who` | ✅ "/who" in Send chat (typed, or the last preset) isn't sent: it lists who's online and where as notices ("3 online in HOENN: you and 2 friends", then "Bot: here", "Ann: Granite Cave (busy)"...) |
 | Name labels / off-screen arrows | ✅ projected through the game's own camera — sit right above heads, indoors and out |
 | Finding the player | ✅ player state object 0x08C6E880 (stable), incremental fallback scans (no frame hitches) |
 | Smooth movement | ✅ friends are shown 120 ms behind, interpolated between packets (sender clock in STATE @40) |
@@ -26,19 +27,22 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Map names | ✅ player list shows where friends are ("Slateport City", "Route 109"), read from the game's own place-name text |
 | Game menus and text boxes | ✅ the overlay steps aside while the X menu or a game text box is open (player mm+0x08 bits 0x8 / 0x02000000) |
 | Doors and map edges | ✅ a friend leaving your map leaves a fading "Name -> Place" note where they left; arriving shows "Name arrived" |
+| "Name is inside" on doors and warps | ✅ every map change seen (yours, and every friend's on any map) teaches a warp: map A at spot P leads to B, and B's arrival spot leads back. A friend on another map gets a steady label on the door/edge of your map that leads toward them (up to 4 doors deep): "Ann is inside" (same place name: a building or another room of this cave) or "Cal, Dee are in Littleroot Town". Fly, Teleport, Dig, Escape Rope, soaring and whiteouts aren't warps: the mover flags them (STATE status bit 3, set for 5 s after a menu, 2 s+ of script control or 3 s+ off the field). Kept in memory for the session. Tested with fake friends walking through a "door" (and one flagged as flying: no label) |
+| Friends in other outfits / models | ✅ any field model a friend's game reports, not just Brendan/May: the map-load hook adds it too, with the descriptor read from the game's own archive (`FUN_0019C678` + `FUN_00128E4C`) on the plain field and remembered in `oras-coop-models.bin` next to the plugin, so it's there from the first map after Continue. Status shows "Models: 13C (read) loaded, AB loaded". Tested with a fake friend sending model 0x13C (a cyclist): stand-in until the next map load, then their own model. Note: vanilla ORAS only ever uses 0xAB/0xAC for the player; this covers modded games and future outfits |
 | Notices | ✅ "Name joined!", "Name left.", chat and "Name is talking to you!" show one at a time in a small box styled like the game's text box at the top of the screen (3.5 s each). They never take control from you (tested: walking straight through join, chat and leave). Notices that arrive during a battle, menu or text box wait until it's over |
 | Joins/leaves during battles and cutscenes | ✅ nothing is spawned or deleted while DllField is unloaded (battles) or while a script, text box or menu is up; it happens once that ends. Tested: three friends joining and leaving on your map mid-battle, and a friend leaving while you were in a text box with them |
 | Busy friends keep animating | ✅ a friend walking under script control (cutscene) moves its legs instead of sliding |
 | Watching a friend's battle | ✅ press A on a friend in a battle: the game's text box shows what each side has out with HP, and the bottom screen lists both teams with live HP bars. Read from DllBattle's memory (`Battle.cpp`), sent as BATTLE frames. Tested on a real wild battle and a fake one |
 | Trading | ✅ all by talking, in the game's own text box: A on a friend → Trade in the choice list → the game's choice list of your party → offer sent. X talks to you → "X offers ..." Yes → picks one back (that also accepts). You talk to X again → "You give / You get … Trade with X?" Yes. The server confirms both accepts to both games at once (COMMIT), then each swaps in the other Pokémon once back on the plain field. B backs out of the list; No calls a trade off. Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows and with a fake trader |
 | Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting), then the trade question, open in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
-| Battling a friend's team | ✅ talk to a friend → "What do you want to do?" with the game's choice list: **Battle** / Trade / Cancel. Battle starts a real trainer battle (the game's own `_CallTrainerBattleCore`, as trainer scripts call it) against the rival that matches their character (May, trainer 906, or Brendan, 699: post-game single battles with the strongest AI), and a hook on the trainer loader (`FriendBattle.cpp`, `FUN_00367804`) swaps in **their party**, healed, nicknames and all. The game's AI plays it. It's friendly: no whiteout on a loss, and afterwards your party (HP, EXP, levels) and money are put back as they were, with a "You beat X's team!" / "You lost to X's team!" notice. Their party travels as PARTY frames (asked for when they join and whenever you talk to them). Tested against a fake friend with a copy of a real 3-Pokémon party in Granite Cave: May sent out their Marshtomp, Zigzagoon and Whismur; won; party back to Lv16 and money back to 7008 |
+| Battling a friend's team | ✅ talk to a friend → "What do you want to do?" with the game's choice list: **Battle** / Trade / Cancel. Battle starts a real trainer battle (the game's own `_CallTrainerBattleCore`, as trainer scripts call it) against the rival that matches their character (May, trainer 906, or Brendan, 699: post-game single battles with the strongest AI), **named after the friend** ("You are challenged by Pokémon Trainer Bot!": the trainer data's name StrBuf, +0x28, is overwritten in the same hook), and a hook on the trainer loader (`FriendBattle.cpp`, `FUN_00367804`) swaps in **their party**, healed, nicknames and all. The game's AI plays it. It's friendly: started with `_CallTrainerBattleCore`'s "may lose" flag (4), so a loss doesn't white you out, and afterwards your party (HP, EXP, levels) and money are put back as they were, with a "You beat X's team!" / "You lost to X's team!" notice. Their party travels as PARTY frames (asked for when they join and whenever you talk to them). Tested against a fake friend with a copy of a real 3-Pokémon party in Granite Cave: May sent out their Marshtomp, Zigzagoon and Whismur; won; party back to Lv16 and money back to 7008. Lost on purpose too (all three fainted): back on the same spot, "You lost to Bot's team!" shown once the game's box closed, party back at full HP |
 | Activity notices | ✅ friends get a notice when you catch a Pokémon ("Sami caught Aron!"), one evolves ("Sami's Marshtomp evolved into Swampert!") or you earn a badge ("Sami earned the Knuckle Badge!"). Read from the save data in memory (badges, PC boxes) and the party (`Activity.cpp`, `Save.cpp`), sent as EVENT frames. A catch = a Pokémon in the party or PC after a battle that wasn't there before it (party full → PC counts too). Tested in Granite Cave: notices from a fake friend, and our own badge/evolution/catch (faked in memory, then restored) reaching the fake friend; running from a battle sends nothing |
 
 ## Known bugs (found playing over Tailscale, 2026-10-19)
 
 1. ~~**Talking to a friend crashes the game of the player who pressed A.**~~ **Fixed.** It was a hang, not a crash: the game's NPC-talk event ran script id 0 (our trainers have no script), which never resolves to a file, so the script runner looped forever. `Talk.cpp` hooks the run-script call (`FUN_003DC114`) and runs our message script for friends' trainers instead. Tested: 10+ talks in a row from both sides, no hang.
 2. ~~**Every friend shows as the same trainer**~~ **Fixed.** Friends' models are only loaded with a map, and the first map after Continue loaded before any friend's model was known, so they showed as your own trainer until a map change. Now both Brendan and May are loaded on every map while Real models is on (one extra model), and a friend spawned with a stand-in is swapped to their own trainer as soon as it's available. Tested with a fake Brendan friend next to two May players, straight after Continue.
+3. ~~**Losing a battle against a friend's team stopped the emulation**~~ **Fixed** (found 2026-10-20). The battle event whites the player out after a loss unless `_CallTrainerBattleCore` gets flag 4 ("may lose"); with flags 0 the whiteout ran under our talk script and Azahar went back to the game list as the battle ended. The talk script now passes flag 4. Tested: lost a full battle, back on the same spot, party restored.
 
 ## Notes for the next session
 
@@ -47,7 +51,11 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
   connects and syncs (2026-10-19), but see Known bugs above.
 - Details for every address/function are in `re/NOTES.md` (action table, anim byte mm+0x58,
   grid records, resident model table + list-loader hook, camera matrix, field-active flag).
-- The model hook only knows Brendan/May; other outfits/characters would need their ids added.
+- A battle does **not** reload the map's resident models (checked: a model wanted mid-map still
+  wasn't loaded after a battle); only a real map change or Continue does.
+- Two Azahar processes can end up running at once (an old window left open): both join the room
+  with the same name, and the other one's trainer stands in your game as a solid character.
+  If a ghost "you" shows up, check Task Manager for a second azahar.exe.
 
 ## How to pick it up
 
@@ -57,7 +65,9 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
    `%APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\`
 3. Server: `node E:\oras-coop\server\server.mjs` (port 7777). Fake friend for testing:
    `node E:\oras-coop\tools\fakefriend.mjs --map <id> --x <x> --y <y> --radius 30 --speed 0.15 --stopgo`
-   (`--anim 0x19` run clip, `--model 0xab` May, `--x2/--y2 --after N` jump to test collision)
+   (`--anim 0x19` run clip, `--model 0xab` May, `--x2/--y2 --after N` jump to test collision,
+   `--map2 <id> --after N` walk through a "door" to another map, `--nowarp` flag that as Fly,
+   `--party <file>` a team to battle, `--listen` prints others' states incl. height z)
 4. Memory tools (Azahar GDB stub, port 24689): `node E:\ORAS-RE\tools\mem.mjs`
    — `watch`, `read`, `dump`, `find-pos`, `find-u32`, `write-float/u32`, `catch-write` (`SET=` to
    write first), `catch-break`, `append-model`.
@@ -75,17 +85,18 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 - Save file: never saved by automation. Tests on 2026-10-20 wrote memory only (a badge bit,
   party slot 0's species, box slot 1) and restored each one.
 - Plugin menu (SELECT) also has two debug entries: spawn test character / action on test character.
+- `oras-coop-models.bin` next to the plugin holds the descriptor of model 0x13C from the outfit
+  test (harmless: only used when a friend reports that model; delete it to forget it).
 
 ## Ideas queue
 
-- **More battles.** The opponent is still named "Pokémon Trainer May/Brendan": the trainer data
-  in the setup (+0x70, two string objects) could take the friend's name. A friend as a **tag
-  partner** (multi battle, `FUN_001DBE74`, client 2) needs a partner trainer id and the same hook.
-  Live player-vs-player (both people choosing moves) would need the link-battle layer.
-  The "You beat/lost to X's team!" notice wasn't seen in the test (it came while a text box was
-  up); check it next time.
+- **More battles.** A friend as a **tag partner** (multi battle, `FUN_001DBE74`, client 2) needs a
+  partner trainer id and the same hook (name included). The trainer class still says "Pokémon
+  Trainer" (the second StrBuf, +0x2C). Live player-vs-player (both people choosing moves) would
+  need the link-battle layer.
 - **More through talking.** Chat still needs SELECT → Send chat (typing needs the keyboard).
   The rest of the plugin menu is setup and debug entries.
 - **Trade animation.** DllField has CallFieldTradeDemo (the in-game trade cutscene); playing it
   after a trade would need its arguments worked out, like the list menu's.
-- Show friends on other maps' doors/warps (e.g. "Bot is inside"), and a /who list in chat.
+- Warps are learned per session; saving them (like the model cache) would label doors from the
+  start. Off-screen doors get no arrow yet.

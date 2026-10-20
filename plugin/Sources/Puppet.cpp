@@ -63,10 +63,27 @@ void Forget(Spawned& s) { s = Spawned(); }
 // loaded). A friend who joins mid-map gets their own model from the next map change on.
 u16 PickModel(u16 theirs) {
     u16 mine = game::PlayerModel();
-    if (!mine || !game::IsPlayerModel(theirs) || theirs == mine) return mine;
+    if (!mine || !game::ModelUsable(theirs) || theirs == mine) return mine;
     if (game::IsModelResident(theirs)) return theirs;
-    if (theirs == game::MODEL_MAY && game::RivalIsMay()) return game::MODEL_RIVAL;
+    if (game::IsMayModel(theirs) && game::RivalIsMay()) return game::MODEL_RIVAL;
     return mine;
+}
+
+// Models for the map loader to add: the ones friends use first (their outfits), then both
+// player characters so a friend who joins mid-map already has theirs (our own is always loaded).
+void UpdateWantedModels(bool enabled, const game::PlayerState& me, const Remote* remotes, u8 myId) {
+    u16 list[game::MAX_WANTED_MODELS];
+    int n = 0;
+    auto add = [&](u16 m) {
+        if (!enabled || !m || m == me.model || n == game::MAX_WANTED_MODELS) return;
+        for (int i = 0; i < n; i++) if (list[i] == m) return;
+        list[n++] = m;
+    };
+    for (int id = 1; id <= MAX_ID; id++)
+        if (id != myId && remotes[id].active && remotes[id].model < game::MODEL_LIMIT) add(remotes[id].model);
+    add(game::MODEL_MAY);
+    add(game::MODEL_BRENDAN);
+    game::SetWantedModels(list, n);
 }
 
 // Walk/run clip while the display position is moving, idle otherwise. The sender's own id
@@ -117,7 +134,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
     // after Continue loads before any friend's model is known (that left friends shown as our own
     // trainer for as long as we stayed on that map). Our own model is loaded anyway (and its slot is
     // filled after the list, so the hook can't see it there): skip it once we know it.
-    game::SetWantedModels(enabled && me.model != game::MODEL_MAY, enabled && me.model != game::MODEL_BRENDAN);
+    UpdateWantedModels(enabled, me, remotes, myId);
     if (!me.valid || !me.inField) {
         // Title, intro, battle or loading: don't touch the field. Our characters are kept
         // track of; if the game deleted them meanwhile, the id check below notices.
@@ -138,6 +155,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
     // spawned, deleted or respawned: friends joining, leaving or changing mounts wait until it's
     // over (scripts address characters by slot and spawn their own). Existing ones keep moving.
     bool frozen = me.suspended || me.locked || me.menuOpen || game::GameScriptRunning();
+    if (settled && !frozen) game::PrepareWantedModels(); // descriptors for friends' other outfits
 
     for (int id = 1; id <= MAX_ID; id++) {
         Spawned& s = s_spawned[id];
@@ -151,7 +169,7 @@ void UpdatePuppets(bool enabled, const game::PlayerState& me, const Remote* remo
         }
         // Spawned with a stand-in (their model wasn't loaded yet, or we didn't know it): swap to
         // their own trainer as soon as this map has it.
-        if (!frozen && s.active && game::IsPlayerModel(r.model) && s.model != r.model && game::IsModelResident(r.model)) {
+        if (!frozen && s.active && game::ModelUsable(r.model) && s.model != r.model && game::IsModelResident(r.model)) {
             Despawn(id, s, me.map);
             continue;
         }

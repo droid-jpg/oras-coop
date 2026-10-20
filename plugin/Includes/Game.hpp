@@ -121,11 +121,31 @@ u16 PlayerModel();
 constexpr u16 MODEL_BRENDAN = 0xAC;
 constexpr u16 MODEL_MAY = 0xAB;
 inline bool IsPlayerModel(u16 m) { return m == MODEL_BRENDAN || m == MODEL_MAY; }
+// Field model ids the game has descriptors for (romfs a/0/2/2 holds 511).
+constexpr u16 MODEL_LIMIT = 0x200;
+// NPC copies of the player characters (descriptor class 1, like the players): May 0x13A, Brendan 0x13B.
+constexpr u16 MODEL_MAY_NPC = 0x13A, MODEL_BRENDAN_NPC = 0x13B;
+inline bool IsMayModel(u16 m) { return m == MODEL_MAY || m == MODEL_MAY_NPC; }
 
-// Friends' trainer models (Models.cpp): hooks the map loader so the player models friends use
-// are added to every map's resident list as it loads (their 3D data then loads normally).
+// Friends' trainer models (Models.cpp): hooks the map loader so the models friends use are added
+// to every map's resident list as it loads (their 3D data then loads normally). Any field model
+// works, not only Brendan/May (a friend in another outfit, or a game whose player model is
+// changed): the descriptor of a model other than those two is read with the game's own loader
+// first (PrepareWantedModels), and only models whose descriptor was read are added.
 bool InstallModelHook();
-void SetWantedModels(bool may, bool brendan);
+constexpr int MAX_WANTED_MODELS = 4;
+// `models` in priority order (the resident table has little room: 30 of 32 entries outdoors).
+void SetWantedModels(const u16* models, int count);
+// Game thread, on the plain field: reads one missing descriptor per call.
+void PrepareWantedModels();
+// "AB, AC, 13C (read) loaded": the wanted models, whether their descriptor was read, and whether
+// this map has them loaded (for the Status screen).
+int DescribeWantedModels(char* out, int len);
+// True if friends can be shown with `model`: Brendan/May, or a model whose descriptor was read.
+bool ModelUsable(u16 model);
+// The game's descriptor (0x18 bytes) for a field model, read the way the game reads them
+// (FUN_0019C678 + FUN_00128E4C). Game thread, on the field only.
+bool ReadModelDescriptor(u16 model, u32* out);
 
 // Rival placeholder model: 0x7A is a "variable" model the story points at the rival, i.e. May
 // for a Brendan player (archive file 0x13A, verified); resident on maps where the rival appears.
@@ -148,8 +168,8 @@ bool IsModelResident(u16 model);
 //   Menu:      `text`, then the game's choice list of `actions` right away. The action picked
 //              goes to the result callback (Action; 0xFF = backed out with B). If it is
 //              `battleAction`, the box closes and a trainer battle against `battleTrainer` starts
-//              (the game's own _CallTrainerBattleCore, as trainer scripts call it; no whiteout on a
-//              loss: that's a separate call we never make). If it is `tradeAction`, `pick` and the
+//              (the game's own _CallTrainerBattleCore, as trainer scripts call it, with its "may
+//              lose" flag: no whiteout on a loss). If it is `tradeAction`, `pick` and the
 //              list of `items` follow, as in YesNoPick.
 enum class DialogKind : u8 { Message, YesNo, YesNoPick, Menu };
 constexpr int DIALOG_ITEMS = 6;
@@ -229,9 +249,10 @@ void HealPokemon(u8* pk);
 
 // ---- Battles with friends' teams (FriendBattle.cpp) ----
 // Hooks the game's trainer loader (FUN_00367804): while armed, the opponent's party (client 1)
-// of the next trainer battle is replaced with `party` (count Pokemon, PK_SIZE bytes each).
+// of the next trainer battle is replaced with `party` (count Pokemon, PK_SIZE bytes each), and
+// the trainer's name with `name` (ASCII; the game's name buffer holds 14 characters).
 bool InstallFriendBattleHook();
-void ArmFriendBattle(const u8* party, int count);
+void ArmFriendBattle(const u8* party, int count, const char* name);
 void DisarmFriendBattle();
 // True once the armed battle's party has been put in (cleared by DisarmFriendBattle).
 bool FriendBattleStarted();
