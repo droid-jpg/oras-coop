@@ -195,6 +195,26 @@ void ApplyEvent(const Frame& f, u8 id) {
     }
 }
 
+// A party request or a piece of a friend's party, addressed to us (lock held).
+void ApplyParty(const Frame& f, u8 id) {
+    Remote& r = g_session.remotes[id];
+    u8 op = f.get<u8>(4);
+    if (op == PARTY_REQUEST) { g_session.partyWanted |= (u16)(1 << id); return; }
+    if (op != PARTY_DATA) return;
+    u8 piece = f.get<u8>(6), count = f.get<u8>(7);
+    if (count > 6) return;
+    if (count != r.partyCount) { r.partyCount = count; r.partyPieces = 0; r.partyComplete = false; }
+    int slot = piece / PARTY_CHUNKS, chunk = piece % PARTY_CHUNKS;
+    if (count && slot < count) {
+        int off = chunk * PARTY_CHUNK;
+        int len = game::PK_SIZE - off < PARTY_CHUNK ? game::PK_SIZE - off : PARTY_CHUNK;
+        if (len > 0) std::memcpy(r.party[slot] + off, f.b + 8, len);
+        r.partyPieces |= 1ULL << piece;
+    }
+    u64 all = count ? (1ULL << (count * PARTY_CHUNKS)) - 1 : 0;
+    r.partyComplete = (r.partyPieces & all) == all;
+}
+
 // A trade step from player `id` addressed to us (lock held).
 void ApplyTrade(const Frame& f, u8 id) {
     Trade& t = g_session.trade;
@@ -251,6 +271,7 @@ void Apply(const Frame& f) {
             f.getStr(4, 16, r.name);
             PushNotice(std::string(r.name) + " joined!", id);
             g_session.greetChanged = true; // the server keeps no state: the newcomer needs ours
+            g_session.partyAsk |= (u16)(1 << id); // so "Battle" is there the first time we talk
         }
         break;
     case T_LEAVE:
@@ -351,6 +372,9 @@ void Apply(const Frame& f) {
     case T_TRADE:
         if (id >= 1 && id <= MAX_ID && f.get<u8>(5) == g_session.myId) ApplyTrade(f, id);
         break;
+    case T_PARTY:
+        if (id >= 1 && id <= MAX_ID && f.get<u8>(5) == g_session.myId) ApplyParty(f, id);
+        break;
     case T_EVENT:
         if (id >= 1 && id <= MAX_ID && g_session.remotes[id].active) ApplyEvent(f, id);
         break;
@@ -411,6 +435,10 @@ void RunSession(const Config& cfg) {
     u32 seq = 0;
     game::BattleState lastBattle;
     u64 lastBattleSend = 0;
+    // Our party on its way to the friends who asked for it, a few pieces per loop (server: 60 frames/s).
+    static u8 outParty[6][game::PK_SIZE];
+    int outCount = 0, outPiece = -1;
+    u16 outTo = 0;
 
     while (g_session.running) {
         std::string chat, greeting;
@@ -422,6 +450,7 @@ void RunSession(const Config& cfg) {
         u32 tradeHash = 0;
         Event events[MAX_EVENTS];
         int eventCount = 0;
+        u16 partyAsk = 0;
         {
             Guard g(g_session.lock);
             if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
@@ -440,6 +469,15 @@ void RunSession(const Config& cfg) {
             if (tradeOffer || tradeAccept || tradeCancel) trade = t;
             if (tradeAccept) tradeHash = TradeHash(t, g_session.myId);
             if (tradeCancel) t = Trade();
+            partyAsk = g_session.partyAsk;
+            g_session.partyAsk = 0;
+            if (outPiece < 0 && g_session.partyWanted) {
+                outTo = g_session.partyWanted;
+                g_session.partyWanted = 0;
+                outCount = g_session.localPartyCount;
+                std::memcpy(outParty, g_session.localParty, sizeof outParty);
+                outPiece = 0;
+            }
             eventCount = g_session.eventCount;
             for (int i = 0; i < eventCount; i++) events[i] = g_session.events[i];
             g_session.eventCount = 0;
@@ -490,6 +528,33 @@ void RunSession(const Config& cfg) {
             e.put<u16>(6, events[i].species);
             e.put<u16>(8, events[i].from);
             sent = conn.Send(e);
+        }
+        if (!sent) break;
+        for (int id = 1; id <= MAX_ID && sent; id++) {
+            if (!(partyAsk & (1 << id))) continue;
+            Frame q(T_PARTY);
+            q.put<u8>(4, PARTY_REQUEST);
+            q.put<u8>(5, (u8)id);
+            sent = conn.Send(q);
+        }
+        // 8 pieces per loop (~30 loops/s) to each friend who asked; a party is at most 42 pieces.
+        int total = outCount * PARTY_CHUNKS;
+        for (int k = 0; k < 8 && outPiece >= 0 && sent; k++) {
+            for (int id = 1; id <= MAX_ID && sent; id++) {
+                if (!(outTo & (1 << id))) continue;
+                Frame p(T_PARTY);
+                p.put<u8>(4, PARTY_DATA);
+                p.put<u8>(5, (u8)id);
+                p.put<u8>(6, (u8)(total ? outPiece : 0));
+                p.put<u8>(7, (u8)outCount);
+                if (total) {
+                    int slot = outPiece / PARTY_CHUNKS, off = (outPiece % PARTY_CHUNKS) * PARTY_CHUNK;
+                    int len = game::PK_SIZE - off < PARTY_CHUNK ? game::PK_SIZE - off : PARTY_CHUNK;
+                    std::memcpy(p.b + 8, outParty[slot] + off, len);
+                }
+                sent = conn.Send(p);
+            }
+            if (++outPiece >= (total ? total : 1)) outPiece = -1;
         }
         if (!sent) break;
 

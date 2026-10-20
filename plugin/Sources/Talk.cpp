@@ -64,7 +64,9 @@ constexpr u32 REQ_FILE = 0x16;               // u16 file id in the resolved requ
 constexpr u32 LINE_INTRO = 0x7FF0, LINE_TEXT = 0x7FF1, LINE_PICK = 0x7FF2;
 constexpr u32 LINE_ITEM = 0x7FE0;                        // + item index
 constexpr int MAX_ITEMS = DIALOG_ITEMS;
-constexpr u32 LINE_ANSWER = 0x7D00, LINE_SLOT = 0x7E00; // + value & 0xFF
+constexpr u32 LINE_ACTION_ITEM = 0x7FE8;                 // + Menu entry index
+constexpr int MAX_ACTIONS = DIALOG_ACTIONS;
+constexpr u32 LINE_ACTION = 0x7C00, LINE_ANSWER = 0x7D00, LINE_SLOT = 0x7E00; // + value & 0xFF
 
 // Game work variables the natives answer in (the Surf script reads 0x8010 after YesNoWin_Seq).
 // ListMenuStart_Seq stores the choice there too (literal 0x0074A4CC; B = 0xFFFF).
@@ -73,7 +75,7 @@ constexpr u32 WORK_ANSWER = 0x8010;
 // Native name hashes: h = c ^ (h * 0x83) over the name (FUN_00505B04). GetWork's name isn't in
 // DllField's table; the Surf script calls it with 0x8010 right after YesNoWin_Seq.
 enum Native : u32 { N_TALK_MSG, N_WIN_READY, N_SUSPEND, N_KEY_WAIT, N_CLOSE, N_YESNO, N_GET_WORK,
-                   N_MARK, N_AB_WAIT, N_UNMARK, N_LIST_INIT, N_LIST_ADD, N_LIST_START, NATIVES };
+                   N_MARK, N_AB_WAIT, N_UNMARK, N_LIST_INIT, N_LIST_ADD, N_LIST_START, N_TRAINER_BATTLE, NATIVES };
 constexpr u32 NATIVE_HASH[NATIVES] = {
     0x9ADF1616, // TalkMdlMsg_Seq
     0xC8E7FB61, // CheckWinAllSuspend
@@ -88,20 +90,23 @@ constexpr u32 NATIVE_HASH[NATIVES] = {
     0x75321BA3, // ListMenuInit_Seq(x, y, ?, B cancels, ?, ?) (DllField 0x748BB8)
     0x7903FD3E, // ListMenuAdd(line, value, other message file?) (0x744F34)
     0x5CB69D67, // ListMenuStart_Seq(): 0 until chosen (0x74A388)
+    0x0B144EC1, // _CallTrainerBattleCore(0, trainer, 0, flags 0, 0, 0, 0): as trainer scripts (common
+                // script file 81) call it; the script resumes once the battle is over (0x74E588)
 };
 
 // Opcodes of the game's Pawn VM (standard Pawn numbering; jump table *(0x0050468C), verifier
 // FUN_001D3630). Jumps are relative to the jump opcode's own address.
 constexpr u32 OP_CONST_ALT = 0x0C, OP_PUSH_PRI = 0x24, OP_PUSH_C = 0x27, OP_PROC = 0x2E, OP_RETN = 0x30;
 constexpr u32 OP_JUMP = 0x33, OP_JZER = 0x35, OP_AND = 0x51, OP_ADD_C = 0x57;
-constexpr u32 OP_ZERO_PRI = 0x59, OP_ZERO_ALT = 0x5A, OP_HALT = 0x78, OP_SYSREQ_N = 0x87, OP_HALT_P = 0xD2;
+constexpr u32 OP_EQ = 0x5F, OP_ZERO_PRI = 0x59, OP_ZERO_ALT = 0x5A, OP_HALT = 0x78, OP_SYSREQ_N = 0x87, OP_HALT_P = 0xD2;
 constexpr u32 AMX_SLEEP = 12;                // HALT code: resume here next frame
 
 constexpr u32 HDR = 0x3C;
 constexpr u32 STACK_HEAP = 0x800;
 
-constexpr u32 MAX_CODE = 480;
-u32 s_image[0x300];
+// The Menu script (two choice lists, a battle and five messages of ~41 words each) is ~650 words.
+constexpr u32 MAX_CODE = 1400;
+u32 s_image[(0x200 + MAX_CODE * 4 + 0x10 + 0x800) / 4];
 u32 s_imageSize = 0;     // bytes (= hea)
 u32 s_stp = 0;
 
@@ -110,6 +115,8 @@ struct Utf16 { u16 c[128]; int len = 0; };
 Utf16 s_intro, s_text, s_pick, s_reply;
 Utf16 s_items[MAX_ITEMS];
 int s_itemCount = 0;
+Utf16 s_actions[MAX_ACTIONS];
+int s_actionCount = 0;
 u32 s_replyLine = 0;     // line s_reply answers (GetString may ask for a line more than once)
 DialogResultFn s_resultFn = nullptr;
 volatile bool s_resolving = false;
@@ -178,6 +185,64 @@ struct Asm {
     void priToLine(u32 base) { op(OP_CONST_ALT); op(0xFF); op(OP_AND); op(OP_ADD_C); op(base); }
 };
 
+// The game's choice list: ListMenuInit_Seq(x, y, ?, B cancels, ?, ?), one ListMenuAdd(line, value, 0)
+// per entry, ListMenuStart_Seq; the choice ends up in work 0x8010 (B = 0xFFFF). y moves the list
+// up (tuned live: 20 px per entry keeps it clear of the text box).
+void ChoiceList(Asm& a, u32 firstLine, int count) {
+    a.until(N_LIST_INIT, 6, [&] {
+        const s32 init[6] = { 0, 0, 1, 0, 20 * count, 0 }; // pushed last to first
+        for (s32 v : init) { a.op(OP_PUSH_C); a.op((u32)v); }
+    });
+    for (int i = 0; i < count; i++) {
+        const u32 add[3] = { 0, (u32)i, firstLine + i }; // pushed last to first
+        for (u32 v : add) { a.op(OP_PUSH_C); a.op(v); }
+        a.sysreq(N_LIST_ADD, 3);
+    }
+    a.until(N_LIST_START, 0, [] {});
+}
+
+// Menu: the actions list; battle -> reply, close, battle; trade -> the party list; else the reply.
+void BuildMenu(Asm& a, const Dialog& d) {
+    ChoiceList(a, LINE_ACTION_ITEM, d.actionCount);
+    u32 notBattle = 0, notTrade = 0;
+    if (d.battleAction >= 0) {
+        a.getWork(WORK_ANSWER);
+        a.op(OP_CONST_ALT); a.op((u32)d.battleAction); a.op(OP_EQ);
+        notBattle = a.jump(OP_JZER);
+        a.getWork(WORK_ANSWER);
+        a.priToLine(LINE_ACTION);
+        a.message(true);
+        a.waitPrinted();
+        a.keyWait();
+        a.close();
+        const u32 args[7] = { 0, 0, 0, 0, 0, d.battleTrainer, 0 }; // pushed last to first
+        for (u32 v : args) { a.op(OP_PUSH_C); a.op(v); }
+        a.sysreq(N_TRAINER_BATTLE, 7);
+        a.op(OP_ZERO_PRI);
+        a.op(OP_RETN);
+        a.land(notBattle);
+    }
+    u32 toEnd = 0;
+    if (d.tradeAction >= 0) {
+        a.getWork(WORK_ANSWER);
+        a.op(OP_CONST_ALT); a.op((u32)d.tradeAction); a.op(OP_EQ);
+        notTrade = a.jump(OP_JZER);
+        a.message(false, LINE_PICK);
+        a.waitPrinted();
+        ChoiceList(a, LINE_ITEM, d.itemCount);
+        a.getWork(WORK_ANSWER);
+        a.priToLine(LINE_SLOT);
+        a.message(true);
+        toEnd = a.jump(OP_JUMP);
+        a.land(notTrade);
+    }
+    a.getWork(WORK_ANSWER);
+    a.priToLine(LINE_ACTION);
+    a.message(true);
+    if (d.tradeAction >= 0) a.land(toEnd);
+    a.waitPrinted();
+}
+
 bool Build(const Dialog& d) {
     s_imageSize = 0;
     Asm a;
@@ -190,7 +255,9 @@ bool Build(const Dialog& d) {
     }
     a.message(false, LINE_TEXT);
     a.waitPrinted();
-    if (d.kind != DialogKind::Message) {
+    if (d.kind == DialogKind::Menu) {
+        BuildMenu(a, d);
+    } else if (d.kind != DialogKind::Message) {
         a.until(N_YESNO, 4, [&] { for (int i = 0; i < 4; i++) { a.op(OP_PUSH_C); a.op(0); } });
         a.getWork(WORK_ANSWER);
         u32 toAnswer = 0;
@@ -199,18 +266,7 @@ bool Build(const Dialog& d) {
             toAnswer = a.jump(OP_JZER);
             a.message(false, LINE_PICK);
             a.waitPrinted();
-            // ListMenuInit_Seq(x, y, ?, B cancels, ?, ?). y moves the list up (tuned live: 20 px per
-            // entry keeps it clear of the text box).
-            a.until(N_LIST_INIT, 6, [&] {
-                const s32 init[6] = { 0, 0, 1, 0, 20 * d.itemCount, 0 }; // pushed last to first
-                for (s32 v : init) { a.op(OP_PUSH_C); a.op((u32)v); }
-            });
-            for (int i = 0; i < d.itemCount; i++) {
-                const u32 add[3] = { 0, (u32)i, LINE_ITEM + i }; // pushed last to first
-                for (u32 v : add) { a.op(OP_PUSH_C); a.op(v); }
-                a.sysreq(N_LIST_ADD, 3);
-            }
-            a.until(N_LIST_START, 0, [] {});
+            ChoiceList(a, LINE_ITEM, d.itemCount);
             a.getWork(WORK_ANSWER);
             a.priToLine(LINE_SLOT);
             a.message(true);
@@ -284,14 +340,17 @@ u32 GetString(u32 msg, u32 line, u32 strbuf, u32 x) {
     else if (line == LINE_TEXT) t = &s_text;
     else if (line == LINE_PICK) t = &s_pick;
     else if (line >= LINE_ITEM && line < LINE_ITEM + MAX_ITEMS && (int)(line - LINE_ITEM) < s_itemCount) t = &s_items[line - LINE_ITEM];
-    else if (line >= LINE_ANSWER && line < LINE_SLOT + 0x100) {
+    else if (line >= LINE_ACTION_ITEM && line < LINE_ACTION_ITEM + MAX_ACTIONS && (int)(line - LINE_ACTION_ITEM) < s_actionCount)
+        t = &s_actions[line - LINE_ACTION_ITEM];
+    else if (line >= LINE_ACTION && line < LINE_SLOT + 0x100) {
         if (line != s_replyLine) {
             // First time this answer is shown: act on it (once) and get the line to show.
             char reply[128] = "...";
             if (s_resultFn) {
-                bool slot = line >= LINE_SLOT;
-                s_resultFn(slot ? DialogResult::Slot : DialogResult::Answer, (int)(line - (slot ? LINE_SLOT : LINE_ANSWER)),
-                           reply, sizeof reply);
+                DialogResult what = line >= LINE_SLOT ? DialogResult::Slot
+                                  : line >= LINE_ANSWER ? DialogResult::Answer : DialogResult::Action;
+                u32 base = what == DialogResult::Slot ? LINE_SLOT : what == DialogResult::Answer ? LINE_ANSWER : LINE_ACTION;
+                s_resultFn(what, (int)(line - base), reply, sizeof reply);
             }
             ToUtf16(reply, s_reply);
             s_replyLine = line;
@@ -359,6 +418,8 @@ int PrepareDialog(const Dialog& d, bool allowRunning) {
     ToUtf16(d.pick, s_pick);
     s_itemCount = d.itemCount < MAX_ITEMS ? d.itemCount : MAX_ITEMS;
     for (int i = 0; i < s_itemCount; i++) ToUtf16(d.items[i], s_items[i]);
+    s_actionCount = d.actionCount < MAX_ACTIONS ? d.actionCount : MAX_ACTIONS;
+    for (int i = 0; i < s_actionCount; i++) ToUtf16(d.actions[i], s_actions[i]);
     s_replyLine = 0;
 
     // Our script file, on the game heap (the game frees it once the script has been loaded). A
@@ -393,7 +454,13 @@ u32 RunScriptHook(u32 field, u32 id, u32 target, u32 p4, u32 p5, u32 p6, u32 p7)
         Dialog d;
         std::strcpy(d.text, "...");
         if (s_talkFn) s_talkFn(who, d);
-        if (PrepareDialog(d, true) == 1) {
+        int r = PrepareDialog(d, true);
+        if (r == -1) { // didn't fit: a plain line rather than the game's script id 0 (hangs)
+            Dialog plain;
+            std::strcpy(plain.text, "...");
+            r = PrepareDialog(plain, true);
+        }
+        if (r == 1) {
             s_resolving = true;
             u32 ev = ctx.OriginalFunction<u32>(field, OUR_ID, target, p4, p5, p6, p7);
             s_resolving = false;

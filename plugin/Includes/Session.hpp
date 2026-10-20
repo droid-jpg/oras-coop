@@ -51,6 +51,11 @@ struct Remote {
     bool surfing = false;         // surfing (shown on the game's surf mount)
     char greeting[40] = {0};      // what they say when we talk to them (T_GREET; empty = not received)
     game::BattleState battle;     // their battle while they are in one (T_BATTLE)
+    // Their party (T_PARTY), asked for when we talk to them, for battling it.
+    u8 party[6][game::PK_SIZE];
+    u8 partyCount = 0;
+    u64 partyPieces = 0;          // bit per received piece (slot * PARTY_CHUNKS + chunk)
+    bool partyComplete = false;
     u64 battleTime = 0;           // when it was last updated
     u64 lastUpdate = 0;
 };
@@ -106,6 +111,11 @@ struct Session {
     Notice notices[MAX_NOTICES];     // queue, oldest first
     int noticeCount = 0;
     Trade trade;
+    // Our party as the game thread last read it (no eggs), for friends who ask for it.
+    u8 localParty[6][game::PK_SIZE];
+    int localPartyCount = 0;
+    u16 partyAsk = 0;                // bit per player: net thread sends PARTY_REQUEST to them
+    u16 partyWanted = 0;             // bit per player who asked for our party
     Event events[MAX_EVENTS];        // ours, not sent yet (game thread -> net thread)
     int eventCount = 0;
     volatile bool running = true;
@@ -122,7 +132,8 @@ u32 TradeHash(const Trade& t, u8 myId);
 void NetThread(void*);
 
 // Watches our own game for catches, evolutions and new badges and queues them as events
-// (Activity.cpp). Game thread, once per frame; takes the lock itself.
-void UpdateActivity(const game::PlayerState& me);
+// (Activity.cpp). Game thread, once per frame; takes the lock itself. quiet: only keep up with
+// the game (a friendly battle runs: its level-ups and our restore afterwards aren't news).
+void UpdateActivity(const game::PlayerState& me, bool quiet);
 
 } // namespace coop

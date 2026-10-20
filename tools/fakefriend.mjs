@@ -7,6 +7,8 @@
 // --listen only prints what it receives (doesn't move). --busy sends the busy bit (as in a cutscene)
 // while walking; --battle also sends a made-up battle (T_BATTLE) whose HP ticks down.
 // --events sends a catch, an evolution and a badge (T_EVENT) a few seconds after joining.
+// --party <file> answers party requests (T_PARTY, for battling us) with the party in <file>
+// (1..6 Pokemon of 0x104 bytes: encrypted data + party stats, e.g. from tools/dumpparty.mjs).
 import net from 'node:net';
 
 const args = Object.fromEntries(
@@ -18,7 +20,7 @@ const args = Object.fromEntries(
 const opt = {
   server: args.server ?? '127.0.0.1', port: Number(args.port ?? 7777), room: args.room ?? 'HOENN',
   name: args.name ?? 'Bot', map: Number(args.map ?? 6), x: Number(args.x ?? 1881), y: Number(args.y ?? 3141),
-  radius: Number(args.radius ?? 54), listen: !!args.listen,
+  radius: Number(args.radius ?? 54), listen: !!args.listen, z: Number(args.z ?? 2), // --z height (cave floors are far below 0)
   speed: Number(args.speed ?? 0.05), anim: Number(args.anim ?? 0x10), stopgo: !!args.stopgo,
   model: Number(args.model ?? 0xab), // player model sent to others: 0xAB May, 0xAC Brendan
   // --x2/--y2 --after N: move the circle centre to (x2,y2) after N seconds (tests moved collision)
@@ -27,7 +29,7 @@ const opt = {
 };
 
 const FRAME = 48;
-const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12, EVENT: 13 };
+const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12, EVENT: 13, PARTY: 14 };
 const names = {};
 const frame = (type) => { const b = Buffer.alloc(FRAME); b[0] = type; b.writeUInt16LE(1, 2); return b; };
 const cstr = (b, o, n) => { const s = b.subarray(o, o + n); const z = s.indexOf(0); return s.subarray(0, z < 0 ? n : z).toString('latin1'); };
@@ -58,6 +60,10 @@ sock.on('data', (d) => {
       case T.BATTLE: console.log(`battle #${id} side=${f[4]} count=${f[5]}` + [...Array(f[5])].map((_, i) => ` [${f.readUInt16LE(6 + i * 7)} ${f.readUInt16LE(8 + i * 7)}/${f.readUInt16LE(10 + i * 7)} L${f[12 + i * 7]}]`).join('')); break;
       case T.TRADE: console.log(`trade #${id} op=${f[4]} to=#${f[5]} chunk=${f[6]}/${f[7]}`); if (f[5] === myId) onTrade(f, id); break;
       case T.EVENT: console.log(`event #${id} ${names[id] ?? ''} kind=${f[4]} value=${f[5]} species=${f.readUInt16LE(6)} from=${f.readUInt16LE(8)}`); break;
+      case T.PARTY:
+        console.log(`party #${id} op=${f[4]} to=#${f[5]} piece=${f[6]} count=${f[7]}`);
+        if (f[4] === 1 && f[5] === myId) sendParty(id);
+        break;
       case T.ERROR: console.log(`error code ${f[4]}`); break;
     }
   }
@@ -79,7 +85,7 @@ setInterval(() => {
   // facing: rough guess at the game's values (0 up, 3 right seen so far)
   s.writeUInt16LE(opt.map, 4);
   s.writeUInt16LE(Math.cos(t) > 0 ? 3 : 2, 6);
-  s.writeFloatLE(x, 8); s.writeFloatLE(2, 12); s.writeFloatLE(y, 16);
+  s.writeFloatLE(x, 8); s.writeFloatLE(opt.z, 12); s.writeFloatLE(y, 16);
   s.writeUInt32LE(++seq, 24);
   // Facing = direction of travel around the circle (tangent); east when standing still.
   const dir = opt.radius > 0 ? [-Math.sin(t), Math.cos(t)] : [1, 0];
@@ -155,3 +161,19 @@ if (args.events) {
     }, 4000 + i * 1000);
   });
 }
+
+function sendParty(to) {
+  const data = args.party ? (await_party ??= (globalThis.fsMod).readFileSync(args.party)) : Buffer.alloc(0);
+  const count = Math.min(6, Math.floor(data.length / 0x104));
+  const frames = [];
+  for (let piece = 0; piece < Math.max(1, count * 7); piece++) {
+    const p = frame(T.PARTY); p[4] = 2; p[5] = to; p[6] = count ? piece : 0; p[7] = count;
+    if (count) { const slot = Math.floor(piece / 7), off = (piece % 7) * 40; data.copy(p, 8, slot * 0x104 + off, slot * 0x104 + Math.min(off + 40, 0x104)); }
+    frames.push(p);
+  }
+  // 20 per 0.5 s: under the server's 60 frames/s with our state frames
+  frames.forEach((p, i) => setTimeout(() => sock.write(p), Math.floor(i / 20) * 500));
+  console.log(`sent party (${count}) to #${to}`);
+}
+let await_party = null;
+globalThis.fsMod = await import('node:fs');

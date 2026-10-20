@@ -196,12 +196,86 @@ void FillPartyChoices(game::Dialog& d) {
 // your offer goes to X. X talks to you -> "X offers ..." Yes -> picks one back, which also
 // accepts. You talk to X again -> "Trade your A for X's B?" Yes. The server then confirms both
 // accepts to both games at once (COMMIT), and each swaps in the other Pokemon.
-enum class Purpose : u8 { None, Offer, AnswerOffer, CancelWaiting, Accept };
+enum class Purpose : u8 { None, Menu, Offer, AnswerOffer, CancelWaiting, Accept };
 struct DialogCtx {
     int id = 0;
     Purpose purpose = Purpose::None;
+    int battleAction = -1, tradeAction = -1;  // Menu
 };
 DialogCtx g_dialog;   // the dialog running now (results arrive on the game thread while it runs)
+
+// ---- Battling a friend's team ----
+// "Battle" in the talk menu arms FriendBattle.cpp with their party (asked for when we started
+// talking) and our script starts a trainer battle against the rival that looks like them. It's a
+// friendly battle: afterwards our party (HP, experience...) and money are put back as they were.
+struct FriendFight {
+    bool armed = false;      // waiting for the battle to start (or to be given up)
+    bool running = false;    // their team is in: restore once we're back on the plain field
+    int id = 0;
+    u64 armedAt = 0;
+    u8 saved[6][game::PK_SIZE];
+    int savedCount = 0;
+    u32 money = 0;
+    bool haveMoney = false;
+    game::BattleState last;  // the battle as last seen, to tell who won
+};
+FriendFight g_fight;
+constexpr u64 FIGHT_START_MS = 20000; // armed but no battle by then: the dialog went another way
+
+bool StartFriendFight(int id) {
+    g_session.lock.Lock();
+    const Remote& r = g_session.remotes[id];
+    bool ok = r.active && r.partyComplete && r.partyCount > 0;
+    static u8 party[6][game::PK_SIZE];
+    int count = r.partyCount;
+    if (ok) std::memcpy(party, r.party, sizeof party);
+    g_session.lock.Unlock();
+    if (!ok) return false;
+    g_fight = FriendFight();
+    // Our script starts the battle either way: their team goes in even if ours can't be saved.
+    g_fight.savedCount = game::PartyCount();
+    for (int i = 0; i < g_fight.savedCount; i++) {
+        if (!game::ReadPartySlot(i, g_fight.saved[i])) { g_fight.savedCount = -1; break; }
+    }
+    g_fight.haveMoney = game::ReadMoney(g_fight.money);
+    g_fight.id = id;
+    g_fight.armed = true;
+    g_fight.armedAt = osGetTime();
+    game::ArmFriendBattle(&party[0][0], count);
+    return true;
+}
+
+bool AllDown(const game::BattleState& b, int side) {
+    if (!b.count[side]) return false;
+    for (int i = 0; i < b.count[side]; i++) if (b.mon[side][i].hp) return false;
+    return true;
+}
+
+void UpdateFriendFight(const View& v) {
+    if (g_fight.armed && game::FriendBattleStarted()) { g_fight.armed = false; g_fight.running = true; }
+    if (g_fight.armed && osGetTime() - g_fight.armedAt > FIGHT_START_MS) {
+        game::DisarmFriendBattle();
+        g_fight = FriendFight();
+        return;
+    }
+    if (!g_fight.running) return;
+    game::BattleState b;
+    if (game::ReadBattle(b)) { g_fight.last = b; return; }
+    // Back on the plain field: put everything back.
+    if (!v.me.inField || v.me.suspended || v.me.locked || v.me.menuOpen || !game::FieldModuleLoaded() ||
+        game::GameScriptRunning())
+        return;
+    bool restored = game::PartyCount() == g_fight.savedCount;
+    for (int i = 0; restored && i < g_fight.savedCount; i++) restored = game::WritePartySlot(i, g_fight.saved[i]);
+    if (g_fight.haveMoney) game::WriteMoney(g_fight.money);
+    game::DisarmFriendBattle();
+    g_session.lock.Lock();
+    std::string name = g_session.remotes[g_fight.id].name;
+    const char* how = AllDown(g_fight.last, 1) ? "You beat " : AllDown(g_fight.last, 0) ? "You lost to " : "Battle over: ";
+    PushNotice(std::string(how) + name + "'s team!" + (restored ? "" : " (party changed, not restored)"), (u8)g_fight.id);
+    g_session.lock.Unlock();
+    g_fight = FriendFight();
+}
 
 game::Dialog FriendDialog(int id) {
     game::Dialog d;
@@ -230,10 +304,22 @@ game::Dialog FriendDialog(int id) {
     }
     if (!t.partner) {
         set(d.intro, greeting);
-        set(d.text, "Trade Pokemon with " + name + "?");
-        d.kind = game::DialogKind::YesNoPick;
+        set(d.text, "What do you want to do?");
+        d.kind = game::DialogKind::Menu;
+        auto action = [&](const char* label) {
+            snprintf(d.actions[d.actionCount], sizeof d.actions[0], "%s", label);
+            return d.actionCount++;
+        };
+        if (r.partyComplete && r.partyCount > 0) { // asked for when we last talked to them
+            d.battleAction = action("Battle");
+            d.battleTrainer = r.model == game::MODEL_MAY ? game::TRAINER_MAY : game::TRAINER_BRENDAN;
+        }
+        d.tradeAction = action("Trade");
+        action("Cancel");
         FillPartyChoices(d);
-        g_dialog.purpose = Purpose::Offer;
+        g_dialog.purpose = Purpose::Menu;
+        g_dialog.battleAction = d.battleAction;
+        g_dialog.tradeAction = d.tradeAction;
     } else if (t.mySlot < 0) {
         if (!t.theirComplete) { set(d.text, greeting); return d; } // their offer is still arriving
         set(d.intro, name + " offers " + MonLabel(t.theirs) + ".");
@@ -270,6 +356,17 @@ void OnDialogResult(game::DialogResult what, int value, char* reply, int len) {
     std::string text = "Maybe next time.";
     bool partnerOk = t.partner == 0 || t.partner == ctx.id;
     switch (ctx.purpose) {
+    case Purpose::Menu:
+        if (what != game::DialogResult::Action) break;
+        if (value == ctx.battleAction) {
+            g_session.lock.Unlock();
+            bool ok = StartFriendFight(ctx.id);
+            g_session.lock.Lock();
+            text = ok ? "Let's battle, " + name + "!" : name + "'s team isn't here yet...";
+        } else if (value == ctx.tradeAction) {
+            g_dialog.purpose = Purpose::Offer; // the party list follows
+        }
+        break;
     case Purpose::Offer:
     case Purpose::AnswerOffer: {
         if (what == game::DialogResult::Answer) { // said No
@@ -422,6 +519,7 @@ void UpdateTalk(const View& v) {
     g_talk.native = res == 1;
     g_session.lock.Lock();
     g_session.pendingTalk = (u8)id;
+    g_session.partyAsk |= (u16)(1 << id); // fresh for the battle option (it arrives in well under a second)
     g_session.lock.Unlock();
 }
 
@@ -729,7 +827,8 @@ void DrawTop(const Screen& s) {
     TrackDoors(v);
     UpdatePuppets(v.puppets, v.me, v.remotes, v.myId, g_talk.open ? g_talk.id : 0);
     FinishTrade(v);
-    UpdateActivity(v.me);
+    UpdateFriendFight(v);
+    UpdateActivity(v.me, g_fight.armed || g_fight.running);
     // The X menu dims the field and the game's own text boxes sit where our labels go: step aside.
     // (The lock comes a few frames before the menu bit; once the menu is up the game stops
     // redrawing the top screen, so whatever we drew last would stay frozen on it.)

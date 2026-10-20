@@ -466,3 +466,26 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
   result, and whether the script or the event handles a loss / whiteout); capture a trainer's
   script from RAM on a route to see it. Decompiles in decomp/btl (ghidra_scripts/DecompRet.java
   clears "no return" on DllField's import thunks, which otherwise cut decompiles short).
+
+### Trainer scripts, trainer data, game text (2026-10-20)
+
+- **RomFS without extracting**: `tools/romfs/romfs.mjs <rom.cci> list|get` (decrypted .cci), GARC
+  reader `tools/romfs/garc.mjs`, Gen 6 text decoder `tools/romfs/text.mjs`. GARCs copied to `romfs/`.
+- **Common scripts = `a/0/2/9`** (85 AMX files; file index = the "file" column of the ranges table
+  at 0x587694). Trainer battles: ids 3000..6999 → **file 81**. Its battle wrapper calls
+  `_CallTrainerBattleCore(0, trainerId, 0, 0, 0, 0, 0)` and goes straight on to
+  `_BattleGetResult(&buf)`: the script resumes once the battle is over. Result word 0 = lost → the
+  script calls **`CallTrainerLose`** (the whiteout); a script that doesn't call it never whites out.
+- Request: `+0x16` file, `+0x10` native mask (`*(0x587BF4 + file*4)`: 0x643 for both file 46 and
+  81, so our Surf-template request can call the battle natives too), `+0x18` per-file value.
+- **Trainer data `a/0/3/6`** (950 × 24 bytes): u16 @0 flags, u16 @2 class, u8 @6 battle type
+  (0 single, 1 double...), u8 @7 Pokemon count, u8 @0x10 AI flags, u8 @0x15 money. Pokemon `a/0/3/8`.
+  English text `a/0/7/3`: file 22 = trainer names, 21 = class names. Rivals: Brendan 1-3, 289-294,
+  527-529, 674-676, 699-701 (post-game, AI 7); May 4-6, 295-300, 530-532, 677-679, 906-908.
+- **Verified in game**: our talk script calling `_CallTrainerBattleCore(0, 906, ...)` starts "You
+  are challenged by Pokemon Trainer May!", and a MITM hook on `FUN_00367804` that overwrites
+  client 1's party objects (+4 data, +8 stats, count @0x18, lead @0x19) after the original puts
+  the friend's team in: ball count, species, nicknames, levels all theirs. The battle mirror
+  (`Battle.cpp`'s side table) is display-only: writing HP there doesn't change the battle.
+- The talk script with a menu is ~650 AMX words: Talk.cpp's buffer was 480, and a failed build
+  fell back to script id 0 (the old hang). Buffer raised; a failed build now shows "..." instead.

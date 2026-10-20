@@ -267,6 +267,8 @@ int main() {
     game::InstallModelHook();
     // Talking to friends (and trading with them) runs in the game's own text box.
     game::InstallTalkHooks(coop::FriendTalk, coop::FriendDialogResult);
+    // Battling a friend's team puts it in as the opponent's party (FriendBattle.cpp).
+    game::InstallFriendBattleHook();
 
     OSD::Run(coop::OverlayCallback);
 

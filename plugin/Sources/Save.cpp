@@ -38,6 +38,15 @@ bool ReadBadges(u8& out) {
     return Process::Read8(BADGES, out);
 }
 
+bool ReadMoney(u32& out) {
+    return Process::Read32(MONEY, out) && out <= MONEY_MAX;
+}
+
+bool WriteMoney(u32 money) {
+    u32 now = 0;
+    return money <= MONEY_MAX && ReadMoney(now) && Process::Write32(MONEY, money);
+}
+
 u32 BoxSlotEC(int slot) {
     u32 ec = 0;
     if (slot < 0 || slot >= BOX_SLOTS || !Process::Read32(BOXES + slot * PK_DATA, ec)) return 0;
@@ -50,7 +59,7 @@ bool ReadBoxSlot(int slot, u8* out) {
     return true;
 }
 
-bool SpeciesOf(const u8* pk, u16& species) {
+bool SpeciesOf(const u8* pk, u16& species, bool* egg) {
     u8 d[PK_DATA];
     std::memcpy(d, pk, PK_DATA);
     u32 ec = d[0] | d[1] << 8 | d[2] << 16 | (u32)d[3] << 24;
@@ -60,11 +69,28 @@ bool SpeciesOf(const u8* pk, u16& species) {
     u16 sum = 0;
     for (int i = 8; i < PK_DATA; i += 2) sum += (u16)(d[i] | d[i + 1] << 8);
     if (sum != (u16)(d[6] | d[7] << 8)) return false;
-    // Species is the first word of block A, wherever the shuffle put it.
-    static const u8 POS_A[24] = { 0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 2, 3, 1, 1, 2, 3, 2, 3, 1, 1, 2, 3, 2, 3 };
-    const u8* a = d + 8 + POS_A[((ec >> 13) & 31) % 24] * 56;
+    // Species is the first word of block A, the egg flag bit 30 of the IVs (block B +0x34),
+    // wherever the shuffle put them.
+    static const char ORDER[24][5] = {
+        "ABCD", "ABDC", "ACBD", "ACDB", "ADBC", "ADCB", "BACD", "BADC", "BCAD", "BCDA", "BDAC", "BDCA",
+        "CABD", "CADB", "CBAD", "CBDA", "CDAB", "CDBA", "DABC", "DACB", "DBAC", "DBCA", "DCAB", "DCBA",
+    };
+    const char* order = ORDER[((ec >> 13) & 31) % 24];
+    const u8* a = d + 8 + (std::strchr(order, 'A') - order) * 56;
+    const u8* b = d + 8 + (std::strchr(order, 'B') - order) * 56;
     species = (u16)(a[0] | a[1] << 8);
+    if (egg) *egg = (b[0x37] & 0x40) != 0;
     return species >= 1 && species <= 721;
+}
+
+void HealPokemon(u8* pk) {
+    u32 ec = pk[0] | pk[1] << 8 | pk[2] << 16 | (u32)pk[3] << 24;
+    u8* st = pk + PK_DATA; // party stats: status u32 @0, level @4, HP @8, max HP @0xA
+    Crypt(st, ec, 0, PK_STATS);
+    std::memset(st, 0, 4);
+    st[8] = st[0xA];
+    st[9] = st[0xB];
+    Crypt(st, ec, 0, PK_STATS);
 }
 
 } // namespace game

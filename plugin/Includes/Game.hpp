@@ -145,8 +145,15 @@ bool IsModelResident(u16 model);
 //              result callback, which writes the reply line.
 //   YesNoPick: as YesNo, and on Yes `pick` is asked with the game's choice list of `items`; the
 //              index chosen (0xFF = backed out with B) goes to the result callback.
-enum class DialogKind : u8 { Message, YesNo, YesNoPick };
+//   Menu:      `text`, then the game's choice list of `actions` right away. The action picked
+//              goes to the result callback (Action; 0xFF = backed out with B). If it is
+//              `battleAction`, the box closes and a trainer battle against `battleTrainer` starts
+//              (the game's own _CallTrainerBattleCore, as trainer scripts call it; no whiteout on a
+//              loss: that's a separate call we never make). If it is `tradeAction`, `pick` and the
+//              list of `items` follow, as in YesNoPick.
+enum class DialogKind : u8 { Message, YesNo, YesNoPick, Menu };
 constexpr int DIALOG_ITEMS = 6;
+constexpr int DIALOG_ACTIONS = 4;
 struct Dialog {
     char intro[96] = {0};
     char text[96] = {0};
@@ -154,9 +161,14 @@ struct Dialog {
     char pick[64] = {0};                  // YesNoPick: the question above the list
     char items[DIALOG_ITEMS][32] = {};    // YesNoPick: the choices
     int itemCount = 0;
+    char actions[DIALOG_ACTIONS][32] = {}; // Menu
+    int actionCount = 0;
+    int battleAction = -1, tradeAction = -1;
+    u16 battleTrainer = 0;
 };
 // Answer: the Yes/No result as the game stores it (non-zero = Yes). Slot: the party slot picked.
-enum class DialogResult : u8 { Answer, Slot };
+// Action: the Menu entry picked (0xFF = none).
+enum class DialogResult : u8 { Answer, Slot, Action };
 using DialogResultFn = void (*)(DialogResult what, int value, char* reply, int len);
 // talkFn fills the dialog for a friend's trainer the player talks to (A in front of it; charId =
 // its character id, 0xE1..0xE8). Both callbacks run on the game thread.
@@ -204,12 +216,28 @@ bool DescribePokemon(const u8* pk, u16& species, u8& level, char* nickname = nul
 // Badges: one bit per gym, in the order they're earned in the story. False if the block doesn't
 // look like the save data (an unknown game version).
 bool ReadBadges(u8& out);
+bool ReadMoney(u32& out);
+bool WriteMoney(u32 money);
 // PC boxes: 31 x 30 slots of encrypted PK6 data (PK_DATA bytes; no party stats).
 constexpr int BOX_SLOTS = 31 * 30;
 u32 BoxSlotEC(int slot);                     // the slot's encryption constant; 0 = empty
 bool ReadBoxSlot(int slot, u8* out);         // PK_DATA bytes
 // Species of encrypted PK6 data (PK_DATA bytes); false if empty or the checksum doesn't match.
-bool SpeciesOf(const u8* pk, u16& species);
+bool SpeciesOf(const u8* pk, u16& species, bool* egg = nullptr);
+// Sets a party Pokemon's (PK_SIZE bytes) current HP to its max and clears its status.
+void HealPokemon(u8* pk);
+
+// ---- Battles with friends' teams (FriendBattle.cpp) ----
+// Hooks the game's trainer loader (FUN_00367804): while armed, the opponent's party (client 1)
+// of the next trainer battle is replaced with `party` (count Pokemon, PK_SIZE bytes each).
+bool InstallFriendBattleHook();
+void ArmFriendBattle(const u8* party, int count);
+void DisarmFriendBattle();
+// True once the armed battle's party has been put in (cleared by DisarmFriendBattle).
+bool FriendBattleStarted();
+// Rival trainers to borrow (single battles, the game's strongest AI flags): they look like a
+// friend's own character. Trainer data a/0/3/6; see re/NOTES.md.
+constexpr u16 TRAINER_BRENDAN = 699, TRAINER_MAY = 906;
 
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);

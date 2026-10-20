@@ -32,14 +32,24 @@ struct Watch {
 };
 Watch g_watch;
 
+// Reads the party, and publishes it (eggs left out) for friends who want to battle it.
 void ReadParty(Mon* out) {
     int count = game::PartyCount();
+    u8 pub[6][game::PK_SIZE];
+    int pubCount = 0;
     for (int i = 0; i < 6; i++) {
         out[i] = Mon();
         u8 pk[game::PK_SIZE];
-        if (i < count && game::ReadPartySlot(i, pk) && game::SpeciesOf(pk, out[i].species))
+        bool egg = false;
+        if (i < count && game::ReadPartySlot(i, pk) && game::SpeciesOf(pk, out[i].species, &egg)) {
             std::memcpy(&out[i].ec, pk, 4);
+            if (!egg) std::memcpy(pub[pubCount++], pk, game::PK_SIZE);
+        }
     }
+    g_session.lock.Lock();
+    std::memcpy(g_session.localParty, pub, sizeof pub);
+    g_session.localPartyCount = pubCount;
+    g_session.lock.Unlock();
 }
 
 bool WasThere(u32 ec) {
@@ -103,7 +113,7 @@ void ReportBadges() {
 
 } // namespace
 
-void UpdateActivity(const game::PlayerState& me) {
+void UpdateActivity(const game::PlayerState& me, bool quiet) {
     u64 now = osGetTime();
     if (now - g_watch.last < POLL_MS) return;
     g_watch.last = now;
@@ -121,7 +131,7 @@ void UpdateActivity(const game::PlayerState& me) {
 
     Mon party[6];
     ReadParty(party);
-    if (g_watch.ready) {
+    if (g_watch.ready && !quiet) {
         if (g_watch.inBattle) ReportCatches(party);
         ReportEvolutions(party);
     }

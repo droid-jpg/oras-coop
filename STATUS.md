@@ -30,8 +30,9 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Joins/leaves during battles and cutscenes | ✅ nothing is spawned or deleted while DllField is unloaded (battles) or while a script, text box or menu is up; it happens once that ends. Tested: three friends joining and leaving on your map mid-battle, and a friend leaving while you were in a text box with them |
 | Busy friends keep animating | ✅ a friend walking under script control (cutscene) moves its legs instead of sliding |
 | Watching a friend's battle | ✅ press A on a friend in a battle: the game's text box shows what each side has out with HP, and the bottom screen lists both teams with live HP bars. Read from DllBattle's memory (`Battle.cpp`), sent as BATTLE frames. Tested on a real wild battle and a fake one |
-| Trading | ✅ all by talking, in the game's own text box: A on a friend → "Trade Pokemon with X?" Yes → the game's choice list of your party → offer sent. X talks to you → "X offers ..." Yes → picks one back (that also accepts). You talk to X again → "You give / You get … Trade with X?" Yes. The server confirms both accepts to both games at once (COMMIT), then each swaps in the other Pokémon once back on the plain field. B backs out of the list; No calls a trade off. Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows and with a fake trader |
+| Trading | ✅ all by talking, in the game's own text box: A on a friend → Trade in the choice list → the game's choice list of your party → offer sent. X talks to you → "X offers ..." Yes → picks one back (that also accepts). You talk to X again → "You give / You get … Trade with X?" Yes. The server confirms both accepts to both games at once (COMMIT), then each swaps in the other Pokémon once back on the plain field. B backs out of the list; No calls a trade off. Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows and with a fake trader |
 | Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting), then the trade question, open in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
+| Battling a friend's team | ✅ talk to a friend → "What do you want to do?" with the game's choice list: **Battle** / Trade / Cancel. Battle starts a real trainer battle (the game's own `_CallTrainerBattleCore`, as trainer scripts call it) against the rival that matches their character (May, trainer 906, or Brendan, 699: post-game single battles with the strongest AI), and a hook on the trainer loader (`FriendBattle.cpp`, `FUN_00367804`) swaps in **their party**, healed, nicknames and all. The game's AI plays it. It's friendly: no whiteout on a loss, and afterwards your party (HP, EXP, levels) and money are put back as they were, with a "You beat X's team!" / "You lost to X's team!" notice. Their party travels as PARTY frames (asked for when they join and whenever you talk to them). Tested against a fake friend with a copy of a real 3-Pokémon party in Granite Cave: May sent out their Marshtomp, Zigzagoon and Whismur; won; party back to Lv16 and money back to 7008 |
 | Activity notices | ✅ friends get a notice when you catch a Pokémon ("Sami caught Aron!"), one evolves ("Sami's Marshtomp evolved into Swampert!") or you earn a badge ("Sami earned the Knuckle Badge!"). Read from the save data in memory (badges, PC boxes) and the party (`Activity.cpp`, `Save.cpp`), sent as EVENT frames. A catch = a Pokémon in the party or PC after a battle that wasn't there before it (party full → PC counts too). Tested in Granite Cave: notices from a fake friend, and our own badge/evolution/catch (faked in memory, then restored) reaching the fake friend; running from a battle sends nothing |
 
 ## Known bugs (found playing over Tailscale, 2026-10-19)
@@ -77,15 +78,12 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 ## Ideas queue
 
-- **Battles between players.** Research started (2026-10-20, static only): `_CallTrainerBattleCore`
-  and the battle setup are mapped in `re/NOTES.md` ("Trainer battles and the battle setup").
-  Plan for a first version: "Battle with X" in the talk dialog runs a trainer battle from our
-  script, and a hook on `FUN_00367804` (loads each trainer client of the setup) overwrites the
-  opponent's party (client 1) with the friend's party, sent over the network like a trade offer.
-  The game's AI plays the friend's team. The same hook can put a friend's team in as a tag partner
-  (client 2, multi battle via `FUN_001DBE74`). Still to find: how game scripts sequence a trainer
-  battle (waiting, the result, no whiteout on a loss): capture a trainer's script from RAM on a
-  route. Live player-vs-player (both people choosing moves) would need the link-battle layer.
+- **More battles.** The opponent is still named "Pokémon Trainer May/Brendan": the trainer data
+  in the setup (+0x70, two string objects) could take the friend's name. A friend as a **tag
+  partner** (multi battle, `FUN_001DBE74`, client 2) needs a partner trainer id and the same hook.
+  Live player-vs-player (both people choosing moves) would need the link-battle layer.
+  The "You beat/lost to X's team!" notice wasn't seen in the test (it came while a text box was
+  up); check it next time.
 - **More through talking.** Chat still needs SELECT → Send chat (typing needs the keyboard).
   The rest of the plugin menu is setup and debug entries.
 - **Trade animation.** DllField has CallFieldTradeDemo (the in-game trade cutscene); playing it
