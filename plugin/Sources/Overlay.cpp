@@ -552,6 +552,12 @@ std::string ExpandNotice(const char* t) {
             u16 species = (u16)((p[1] & 0x7F) | (p[2] & 0x7F) << 7);
             out += MonName(species, (u8)p[3]);
             p += 3;
+        } else if (*p == 2 && p[1] && p[2]) { // species name only
+            u16 species = (u16)((p[1] & 0x7F) | (p[2] & 0x7F) << 7);
+            char nm[16];
+            if (!game::SpeciesName(species, nm, sizeof nm)) snprintf(nm, sizeof nm, "#%u", (unsigned)species);
+            out += nm;
+            p += 2;
         } else {
             out += *p;
         }
@@ -723,6 +729,7 @@ void DrawTop(const Screen& s) {
     TrackDoors(v);
     UpdatePuppets(v.puppets, v.me, v.remotes, v.myId, g_talk.open ? g_talk.id : 0);
     FinishTrade(v);
+    UpdateActivity(v.me);
     // The X menu dims the field and the game's own text boxes sit where our labels go: step aside.
     // (The lock comes a few frames before the menu bit; once the menu is up the game stops
     // redrawing the top screen, so whatever we drew last would stay frozen on it.)

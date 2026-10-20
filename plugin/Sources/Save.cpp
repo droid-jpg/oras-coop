@@ -1,0 +1,70 @@
+// The save data the game keeps in memory (read-only): badges and the PC boxes.
+// The save is one boot-time allocation, at the same address in every run seen (like the player
+// object and the party). Its blocks are packed differently from the save file; found by matching
+// the save file's blocks in a RAM dump (re/NOTES.md, "Save data in memory").
+#include <3ds.h>
+#include <CTRPluginFramework.hpp>
+#include <cstring>
+#include "Game.hpp"
+
+using namespace CTRPluginFramework;
+
+namespace game {
+
+namespace {
+
+// Save file block 0x4200 (money u32 @+8, badges u8 @+0xC, one bit per gym in order) is at
+// 0x08C71DB8. Money is capped at 9,999,999 by the game, which makes a cheap sanity check.
+constexpr u32 SITUATION = 0x08C71DB8, MONEY = SITUATION + 8, BADGES = SITUATION + 0xC;
+constexpr u32 MONEY_MAX = 9999999;
+
+// Save file 0x33000: 31 boxes x 30 slots of encrypted PK6 data (0xE8 bytes, no party stats).
+constexpr u32 BOXES = 0x08C9E134;
+
+void Crypt(u8* b, u32 seed, int start, int end) {
+    for (int i = start; i + 1 < end; i += 2) {
+        seed = seed * 0x41C64E6D + 0x6073;
+        u16 w = (u16)(b[i] | b[i + 1] << 8) ^ (u16)(seed >> 16);
+        b[i] = (u8)w;
+        b[i + 1] = (u8)(w >> 8);
+    }
+}
+
+} // namespace
+
+bool ReadBadges(u8& out) {
+    u32 money = 0;
+    if (!Process::Read32(MONEY, money) || money > MONEY_MAX) return false;
+    return Process::Read8(BADGES, out);
+}
+
+u32 BoxSlotEC(int slot) {
+    u32 ec = 0;
+    if (slot < 0 || slot >= BOX_SLOTS || !Process::Read32(BOXES + slot * PK_DATA, ec)) return 0;
+    return ec;
+}
+
+bool ReadBoxSlot(int slot, u8* out) {
+    if (slot < 0 || slot >= BOX_SLOTS) return false;
+    std::memcpy(out, reinterpret_cast<const void*>(BOXES + slot * PK_DATA), PK_DATA);
+    return true;
+}
+
+bool SpeciesOf(const u8* pk, u16& species) {
+    u8 d[PK_DATA];
+    std::memcpy(d, pk, PK_DATA);
+    u32 ec = d[0] | d[1] << 8 | d[2] << 16 | (u32)d[3] << 24;
+    if (!ec) return false;
+    Crypt(d, ec, 8, PK_DATA);
+    // The stored checksum (u16 @6) is the sum of the decrypted words: rejects empty or torn slots.
+    u16 sum = 0;
+    for (int i = 8; i < PK_DATA; i += 2) sum += (u16)(d[i] | d[i + 1] << 8);
+    if (sum != (u16)(d[6] | d[7] << 8)) return false;
+    // Species is the first word of block A, wherever the shuffle put it.
+    static const u8 POS_A[24] = { 0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 2, 3, 1, 1, 2, 3, 2, 3, 1, 1, 2, 3, 2, 3 };
+    const u8* a = d + 8 + POS_A[((ec >> 13) & 31) % 24] * 56;
+    species = (u16)(a[0] | a[1] << 8);
+    return species >= 1 && species <= 721;
+}
+
+} // namespace game

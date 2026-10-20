@@ -12,7 +12,7 @@ const HELLO_TIMEOUT_MS = 5000;
 const IDLE_TIMEOUT_MS = 10000;
 const MAX_FRAMES_PER_SEC = 60;
 
-const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12 };
+const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12, EVENT: 13 };
 const TRADE = { OFFER: 1, ACCEPT: 2, CANCEL: 3, COMMIT: 4 };
 const ERR = { ROOM_FULL: 1, BAD_HELLO: 2, VERSION: 3 };
 
@@ -94,6 +94,7 @@ class Client {
       case T.GREET:
       case T.TALK:
       case T.BATTLE:
+      case T.EVENT:
         f[1] = this.id; // stamp the real sender
         this.broadcast(f);
         break;

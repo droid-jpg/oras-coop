@@ -15,6 +15,13 @@ enum : u8 {
     T_TALK,   // talking to player u8 @4 (they get a notice)
     T_BATTLE, // the sender's battle: side u8 @4, count u8 @5, entries @6 (BATTLE_ENTRY each); count 0 = over
     T_TRADE,  // trade step: op u8 @4, target u8 @5, chunk u8 @6, chunks u8 @7, data @8..47
+    T_EVENT,  // something happened in the sender's game: kind u8 @4, value u8 @5, species u16 @6, from u16 @8
+};
+
+enum : u8 {
+    EVENT_CAUGHT = 1,   // species = what they caught
+    EVENT_EVOLVED = 2,  // from -> species
+    EVENT_BADGE = 3,    // value = badge number (1..8)
 };
 
 constexpr int BATTLE_ENTRY = 7; // u16 species, u16 hp, u16 max HP, u8 level

@@ -164,6 +164,37 @@ std::string Describe(const u8* pk) {
     return buf;
 }
 
+// "\x02" + species: resolved to the species name by the overlay, like Describe.
+std::string SpeciesTag(u16 species) {
+    char buf[4] = { 2, (char)(0x80 | (species & 0x7F)), (char)(0x80 | species >> 7), 0 };
+    return buf;
+}
+
+// Hoenn's gym badges in the order the bits are set.
+const char* const BADGE_NAMES[8] = { "Stone", "Knuckle", "Dynamo", "Heat", "Balance", "Feather", "Mind", "Rain" };
+
+// A friend's catch, evolution or badge (lock held).
+void ApplyEvent(const Frame& f, u8 id) {
+    std::string name = g_session.remotes[id].name;
+    u8 kind = f.get<u8>(4), value = f.get<u8>(5);
+    u16 species = f.get<u16>(6), from = f.get<u16>(8);
+    if ((kind == EVENT_CAUGHT || kind == EVENT_EVOLVED) && (!species || species > 721)) return;
+    switch (kind) {
+    case EVENT_CAUGHT:
+        PushNotice(name + " caught " + SpeciesTag(species) + "!", id);
+        break;
+    case EVENT_EVOLVED:
+        if (!from || from > 721) return;
+        PushNotice(name + "'s " + SpeciesTag(from) + " evolved into " + SpeciesTag(species) + "!", id);
+        break;
+    case EVENT_BADGE:
+        if (value >= 1 && value <= 8) PushNotice(name + " earned the " + BADGE_NAMES[value - 1] + " Badge!", id);
+        break;
+    default:
+        break;
+    }
+}
+
 // A trade step from player `id` addressed to us (lock held).
 void ApplyTrade(const Frame& f, u8 id) {
     Trade& t = g_session.trade;
@@ -320,6 +351,9 @@ void Apply(const Frame& f) {
     case T_TRADE:
         if (id >= 1 && id <= MAX_ID && f.get<u8>(5) == g_session.myId) ApplyTrade(f, id);
         break;
+    case T_EVENT:
+        if (id >= 1 && id <= MAX_ID && g_session.remotes[id].active) ApplyEvent(f, id);
+        break;
     case T_ERROR: {
         u8 code = f.get<u8>(4);
         g_session.status = NetStatus::Failed;
@@ -386,6 +420,8 @@ void RunSession(const Config& cfg) {
         Trade trade;
         bool tradeOffer = false, tradeAccept = false, tradeCancel = false;
         u32 tradeHash = 0;
+        Event events[MAX_EVENTS];
+        int eventCount = 0;
         {
             Guard g(g_session.lock);
             if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
@@ -404,6 +440,9 @@ void RunSession(const Config& cfg) {
             if (tradeOffer || tradeAccept || tradeCancel) trade = t;
             if (tradeAccept) tradeHash = TradeHash(t, g_session.myId);
             if (tradeCancel) t = Trade();
+            eventCount = g_session.eventCount;
+            for (int i = 0; i < eventCount; i++) events[i] = g_session.events[i];
+            g_session.eventCount = 0;
         }
 
         u64 now = osGetTime();
@@ -443,6 +482,16 @@ void RunSession(const Config& cfg) {
             t.put<u8>(4, talkTo);
             if (!conn.Send(t)) break;
         }
+        bool sent = true;
+        for (int i = 0; i < eventCount && sent; i++) {
+            Frame e(T_EVENT);
+            e.put<u8>(4, events[i].kind);
+            e.put<u8>(5, events[i].value);
+            e.put<u16>(6, events[i].species);
+            e.put<u16>(8, events[i].from);
+            sent = conn.Send(e);
+        }
+        if (!sent) break;
 
         // Our battle, for friends who walk up to our trainer: on every change, else every 2 s.
         if (battle.active && (!SameBattle(battle, lastBattle) || now - lastBattleSend >= 2000)) {

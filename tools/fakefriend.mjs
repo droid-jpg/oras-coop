@@ -6,6 +6,7 @@
 // moving (0x10 = walk), --stopgo walks 4 s then stands 2 s to test idle/walk switching.
 // --listen only prints what it receives (doesn't move). --busy sends the busy bit (as in a cutscene)
 // while walking; --battle also sends a made-up battle (T_BATTLE) whose HP ticks down.
+// --events sends a catch, an evolution and a badge (T_EVENT) a few seconds after joining.
 import net from 'node:net';
 
 const args = Object.fromEntries(
@@ -26,7 +27,7 @@ const opt = {
 };
 
 const FRAME = 48;
-const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12 };
+const T = { HELLO: 1, WELCOME: 2, STATE: 3, CHAT: 4, JOIN: 5, LEAVE: 6, ERROR: 7, PING: 8, GREET: 9, TALK: 10, BATTLE: 11, TRADE: 12, EVENT: 13 };
 const names = {};
 const frame = (type) => { const b = Buffer.alloc(FRAME); b[0] = type; b.writeUInt16LE(1, 2); return b; };
 const cstr = (b, o, n) => { const s = b.subarray(o, o + n); const z = s.indexOf(0); return s.subarray(0, z < 0 ? n : z).toString('latin1'); };
@@ -56,6 +57,7 @@ sock.on('data', (d) => {
       case T.TALK: console.log(`talk #${id} ${names[id] ?? ''} -> #${f[4]}`); break;
       case T.BATTLE: console.log(`battle #${id} side=${f[4]} count=${f[5]}` + [...Array(f[5])].map((_, i) => ` [${f.readUInt16LE(6 + i * 7)} ${f.readUInt16LE(8 + i * 7)}/${f.readUInt16LE(10 + i * 7)} L${f[12 + i * 7]}]`).join('')); break;
       case T.TRADE: console.log(`trade #${id} op=${f[4]} to=#${f[5]} chunk=${f[6]}/${f[7]}`); if (f[5] === myId) onTrade(f, id); break;
+      case T.EVENT: console.log(`event #${id} ${names[id] ?? ''} kind=${f[4]} value=${f[5]} species=${f.readUInt16LE(6)} from=${f.readUInt16LE(8)}`); break;
       case T.ERROR: console.log(`error code ${f[4]}`); break;
     }
   }
@@ -142,4 +144,14 @@ if (opt.battle) {
 
 if (!opt.listen) {
   setTimeout(() => { const c = frame(T.CHAT); c.write('hello from the bot', 4, 'latin1'); sock.write(c); }, 1500);
+}
+
+if (args.events) {
+  // Caught a Wingull (278), Torchic (255) evolved into Combusken (256), earned the Knuckle Badge (2).
+  [[1, 0, 278, 0], [2, 0, 256, 255], [3, 2, 0, 0]].forEach(([kind, value, species, from], i) => {
+    setTimeout(() => {
+      const e = frame(T.EVENT); e[4] = kind; e[5] = value; e.writeUInt16LE(species, 6); e.writeUInt16LE(from, 8);
+      sock.write(e);
+    }, 4000 + i * 1000);
+  });
 }

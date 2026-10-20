@@ -425,3 +425,44 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
   field faded to black (soft lock; real scripts fade around it). Not used.
 - The party screen and bag run as their own CRO in the shared slot (name 0x00706000 seen), so
   "DllField loaded" doubles as "on the plain field".
+
+### Save data in memory (2026-10-20)
+
+- The save is one boot-time block in RAM, but packed differently from the save file. Found by
+  matching the save file's blocks against a RAM dump (save file offset -> RAM):
+  0x4200 -> **0x08C71DB8** (money u32 @+8, **badges u8 @+0xC**, one bit per gym),
+  0x14000 -> 0x08C81340 (MyStatus: TID @0, OT name @+0x48), 0x15000 -> 0x08C81FE4 (Pokedex),
+  0x1F400 -> 0x08C8B270, 0x31800 -> 0x08C9CA78, **0x33000 (PC boxes) -> 0x08C9E134** (31x30 x 0xE8,
+  encrypted PK6, EC first; the usual NTR/PKHeX address). Delta isn't constant (0x8C6B134..0x8C6E9A4).
+- The save on this machine (Sami, 1 badge, 7008 money, boxes empty) matched at the intro already:
+  the save is loaded before Continue.
+- Used by the plugin's activity notices (Activity.cpp / Save.cpp).
+
+### Trainer battles and the battle setup (2026-10-20, static only)
+
+- Script native **`_CallTrainerBattleCore`** (DllField 0x74E588), 7 args: u16 a1, u16 a2, u16 a3,
+  u32 flags, u8 a5, u8 a6, u8 a7. Packed as { u8 type, u16 a1 @2, u16 a2 @4, u16 a3 @6, u32 flags @8,
+  u8 @0xC..0xE }. a1 == 0: trainer data for a2 is read (`FUN_00454004`, GARC 0x24) and its byte +6
+  becomes `type`; a1 != 0: type 1. Then `FUN_003DA09C` (thunk 0x6F6098) makes the battle event
+  (0x290 bytes) and **`FUN_003DA118`** fills it:
+  - setup (BATTLE_SETUP_PARAM) at **event+0x30**; by type: 0 + a3 != 0 → `FUN_001D8B94` (two
+    trainers a2, a3), 1 + a1 != 0 → **`FUN_001DBE74` (multi: partner a1, foes a2, a3)**, else
+    **`FUN_001D6E0C`** (one trainer a2).
+  - flags: 0x10/0x20/0x40/0x80 → value 5/10/20/-10 to `FUN_003EAED0` (unknown), 4 → setup+0xA8 |= 0x100,
+    1 → a filtered copy of the player's party goes in with `FUN_003B66C8(setup, party, 0)`,
+    2 → `FUN_001E0518(setup)`, 8 → setup+0xAC = const.
+- Setup: **party per client at +0x4C + client*4** (0 you, 1 foe, 2 partner, 3 second foe), trainer
+  data per client at +0x6C + client*4 (0x38 bytes, `FUN_001F0558`; two string objects of 0xF and
+  0x17 chars at [10]/[11], probably name and class), +0x1C s8 level offset applied to trainer parties.
+- **`FUN_00367804(setup, gamedata, client, party, trainerId, heap)`** loads a trainer client: trainer
+  data (`FUN_0045564C`), party (`FUN_004550A0`), then the level offset. Called for every trainer
+  client (single, double, multi), so it is the hook point for putting a friend's team in a battle
+  as the opponent (client 1) or as a tag partner (client 2).
+- PokeParty = 6 pointers to Pokemon objects (all 6 allocated) + u8 count @0x18 + u8 lead @0x19
+  (first non-fainted, non-egg); same layout as the save party at 0x08CFB1E0. `FUN_003B6754(party, pk)`
+  appends, `FUN_003B63DC(party, i)` gets, `FUN_003B26D0(dst, src)` copies a Pokemon,
+  `FUN_003B66C8(setup, party, client)` copies a whole party into a client's slot.
+- Still unknown: how game scripts sequence a trainer battle (which natives wait for it, read the
+  result, and whether the script or the event handles a loss / whiteout); capture a trainer's
+  script from RAM on a route to see it. Decompiles in decomp/btl (ghidra_scripts/DecompRet.java
+  clears "no return" on DllField's import thunks, which otherwise cut decompiles short).

@@ -200,6 +200,17 @@ bool ReadPartySlot(int slot, u8* out);         // PK_SIZE bytes
 bool WritePartySlot(int slot, const u8* in);   // replaces that slot (field only, no menu open)
 bool DescribePokemon(const u8* pk, u16& species, u8& level, char* nickname = nullptr, int nickLen = 0);
 
+// ---- Save data in memory (Save.cpp, read-only) ----
+// Badges: one bit per gym, in the order they're earned in the story. False if the block doesn't
+// look like the save data (an unknown game version).
+bool ReadBadges(u8& out);
+// PC boxes: 31 x 30 slots of encrypted PK6 data (PK_DATA bytes; no party stats).
+constexpr int BOX_SLOTS = 31 * 30;
+u32 BoxSlotEC(int slot);                     // the slot's encryption constant; 0 = empty
+bool ReadBoxSlot(int slot, u8* out);         // PK_DATA bytes
+// Species of encrypted PK6 data (PK_DATA bytes); false if empty or the checksum doesn't match.
+bool SpeciesOf(const u8* pk, u16& species);
+
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);
 

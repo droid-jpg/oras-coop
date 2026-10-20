@@ -1,4 +1,4 @@
-# oras-coop — status (updated 2026-10-19)
+# oras-coop — status (updated 2026-10-20)
 
 Co-op mod for **Pokémon Alpha Sapphire v1.4** on Azahar: a 3GX plugin plus a Node relay server.
 Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, function list).
@@ -32,6 +32,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Watching a friend's battle | ✅ press A on a friend in a battle: the game's text box shows what each side has out with HP, and the bottom screen lists both teams with live HP bars. Read from DllBattle's memory (`Battle.cpp`), sent as BATTLE frames. Tested on a real wild battle and a fake one |
 | Trading | ✅ all by talking, in the game's own text box: A on a friend → "Trade Pokemon with X?" Yes → the game's choice list of your party → offer sent. X talks to you → "X offers ..." Yes → picks one back (that also accepts). You talk to X again → "You give / You get … Trade with X?" Yes. The server confirms both accepts to both games at once (COMMIT), then each swaps in the other Pokémon once back on the plain field. B backs out of the list; No calls a trade off. Not the game's link trade: no trade evolutions, no Pokédex entry. Tested between the two windows and with a fake trader |
 | Talking to friends | ✅ walk up to a friend and press A: their greeting (menu → Your greeting), then the trade question, open in the **game's own text box** (the game runs a tiny script of ours through its NPC-talk event; `Talk.cpp`), and they get "Name is talking to you!". Friends shown as markers only get a plugin-drawn box |
+| Activity notices | ✅ friends get a notice when you catch a Pokémon ("Sami caught Aron!"), one evolves ("Sami's Marshtomp evolved into Swampert!") or you earn a badge ("Sami earned the Knuckle Badge!"). Read from the save data in memory (badges, PC boxes) and the party (`Activity.cpp`, `Save.cpp`), sent as EVENT frames. A catch = a Pokémon in the party or PC after a battle that wasn't there before it (party full → PC counts too). Tested in Granite Cave: notices from a fake friend, and our own badge/evolution/catch (faked in memory, then restored) reaching the fake friend; running from a battle sends nothing |
 
 ## Known bugs (found playing over Tailscale, 2026-10-19)
 
@@ -67,13 +68,24 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 - Azahar settings changed: plugin loader **on**, GDB stub **on** (backup: `qt-config.ini.bak-oras-coop`).
   Turn the GDB stub off for normal play — it slows things when a debugger is attached.
 - Plugin config `oras-coop.txt` has `puppets=1` (Real models on).
-- Save file untouched (last written 2026-10-18 22:46, before any automation).
+- GDB stub port is now **24690** (`GDB_PORT=24690 node mem.mjs ...`).
+- Azahar has a second input profile **Keyboard** (A=A, B=S, X=Z, Y=X, Start=M, Select=N,
+  arrows = Circle Pad) for automated testing; **Default** (the controller) is the active one.
+- Save file: never saved by automation. Tests on 2026-10-20 wrote memory only (a badge bit,
+  party slot 0's species, box slot 1) and restored each one.
 - Plugin menu (SELECT) also has two debug entries: spawn test character / action on test character.
 
 ## Ideas queue
 
-- **Battles between players.** Not started. Needs the game's link-battle setup (DllBattle's
-  communication layer); expect several sessions of reverse engineering.
+- **Battles between players.** Research started (2026-10-20, static only): `_CallTrainerBattleCore`
+  and the battle setup are mapped in `re/NOTES.md` ("Trainer battles and the battle setup").
+  Plan for a first version: "Battle with X" in the talk dialog runs a trainer battle from our
+  script, and a hook on `FUN_00367804` (loads each trainer client of the setup) overwrites the
+  opponent's party (client 1) with the friend's party, sent over the network like a trade offer.
+  The game's AI plays the friend's team. The same hook can put a friend's team in as a tag partner
+  (client 2, multi battle via `FUN_001DBE74`). Still to find: how game scripts sequence a trainer
+  battle (waiting, the result, no whiteout on a loss): capture a trainer's script from RAM on a
+  route. Live player-vs-player (both people choosing moves) would need the link-battle layer.
 - **More through talking.** Chat still needs SELECT → Send chat (typing needs the keyboard).
   The rest of the plugin menu is setup and debug entries.
 - **Trade animation.** DllField has CallFieldTradeDemo (the in-game trade cutscene); playing it

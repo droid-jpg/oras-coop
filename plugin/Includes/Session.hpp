@@ -81,6 +81,13 @@ struct Trade {
     bool pendingWrite = false;             // both accepted: the game thread writes at a safe moment
 };
 
+// Something that happened in our game, for friends' notices (T_EVENT): caught, evolved, badge.
+struct Event {
+    u8 kind = 0, value = 0;
+    u16 species = 0, from = 0;
+};
+constexpr int MAX_EVENTS = 8;
+
 struct Session {
     CTRPluginFramework::Mutex lock;
     Config cfg;
@@ -99,6 +106,8 @@ struct Session {
     Notice notices[MAX_NOTICES];     // queue, oldest first
     int noticeCount = 0;
     Trade trade;
+    Event events[MAX_EVENTS];        // ours, not sent yet (game thread -> net thread)
+    int eventCount = 0;
     volatile bool running = true;
 };
 
@@ -111,5 +120,9 @@ void PushNotice(const std::string& text, u8 from = 0);
 u32 TradeHash(const Trade& t, u8 myId);
 
 void NetThread(void*);
+
+// Watches our own game for catches, evolutions and new badges and queues them as events
+// (Activity.cpp). Game thread, once per frame; takes the lock itself.
+void UpdateActivity(const game::PlayerState& me);
 
 } // namespace coop

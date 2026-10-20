@@ -24,6 +24,7 @@ TCP, little-endian, **fixed 48-byte frames**. Every frame starts with:
 | 10 | TALK | both | `target` u8 @4 — the sender pressed A facing player `target`; only the target reacts (a notice). |
 | 11 | BATTLE | both | The sender's battle, sent on every change and every 2 s while it lasts: `side` u8 @4 (0 = the sender's team, 1 = the opponent), `count` u8 @5, then `count` (≤ 6) entries of 7 bytes from @6: `species` u16, `hp` u16, `maxHp` u16, `level` u8. Entry 0 is the Pokémon out. `count` 0 = the battle is over. |
 | 12 | TRADE | both | One step of a trade, for player `target` u8 @5 only: `op` u8 @4 (1 OFFER, 2 ACCEPT, 3 CANCEL, 4 COMMIT). OFFER: `chunk` u8 @6 of `chunks` u8 @7 (7), 40 bytes of the offered Pokémon @8 (0x104 bytes in all: encrypted 0xE8 data + 0x1C party stats, as the game stores them). ACCEPT: u32 @8 = FNV-1a over both offers (lower player id's first). COMMIT comes only from the server: once both players have sent ACCEPT for each other with the same hash, it sends COMMIT (`player` = the partner, same hash) to both at once; an OFFER or CANCEL from either side, or either leaving, clears pending accepts. A game swaps only on COMMIT (and ignores COMMIT from clients, which the server never relays). |
+| 13 | EVENT | both | Something happened in the sender's game, shown to friends as a notice: `kind` u8 @4 (1 CAUGHT: `species` u16 @6 was caught; 2 EVOLVED: `from` u16 @8 evolved into `species`; 3 BADGE: `value` u8 @5 = badge number 1..8, in the order the gyms are beaten). |
 
 ## Flow
 
@@ -31,7 +32,7 @@ TCP, little-endian, **fixed 48-byte frames**. Every frame starts with:
 2. Server replies WELCOME, then sends a JOIN for every player already in the room,
    then broadcasts a JOIN for the new player to everyone else.
 3. Clients send STATE about 15×/s while moving and at least once per second while idle.
-   The server relays STATE, CHAT, GREET, TALK, BATTLE and TRADE to everyone else in the room.
+   The server relays STATE, CHAT, GREET, TALK, BATTLE, TRADE and EVENT to everyone else in the room.
 4. On disconnect, or after 10 s of silence, the server broadcasts LEAVE.
 
 Positions are map-local; clients only draw players whose `map` matches their own.
