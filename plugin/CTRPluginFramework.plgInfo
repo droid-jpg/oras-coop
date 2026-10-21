@@ -3,7 +3,7 @@ Author: oras-mmo
 Version: # Plugin version
     Major: 0
     Minor: 3
-    Revision: 1
+    Revision: 2
 
 Targets: # Low TitleId of games which are compatibles with this plugin (0 for all)
     - 0x0011C500 # Pokemon Alpha Sapphire
