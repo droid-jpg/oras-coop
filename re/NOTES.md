@@ -120,7 +120,7 @@ Flags compare: kid `+0x04`=0x08010003 `+0x08`=0x00004002; player `+0x04`=0x00010
   2 left, 3 right, 7 down-right (4–6 other diagonals).
 - Animation-ish fields that change with facing/state: +0x824, +0x830, +0x904, +0x90C.
 
-### ✅ oras-coop "Real models" mode works (plugin v0.1.0, 2026-10-18)
+### ✅ oras-mmo "Real models" mode works (plugin v0.1.0, 2026-10-18)
 
 Plugin drives the nearest free NPC's move model to each remote player every frame
 (pos, committed copy, facing, moving bit), restores it on release. Verified in Azahar with

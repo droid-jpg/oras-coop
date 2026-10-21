@@ -1,7 +1,7 @@
 #!/bin/bash
-# oras-coop installer for Azahar (macOS). Run through "Install oras-coop.command".
+# oras-mmo installer for Azahar (macOS). Run through "Install oras-mmo.command".
 #   --dir <path>   Azahar user folder (default ~/Library/Application Support/Azahar)
-#   --uninstall    remove the plugin (keeps oras-coop.txt and Azahar's settings)
+#   --uninstall    remove the plugin (keeps oras-mmo.txt and Azahar's settings)
 # Written for the bash 3.2 that ships with macOS.
 set -euo pipefail
 
@@ -41,9 +41,10 @@ AZAHAR_DIR="$(printf '%s' "$AZAHAR_DIR" | sed "s/^[ '\"]*//; s/[ '\"]*$//; s/\\\
 mkdir -p "$AZAHAR_DIR"
 
 PLUGIN_DIR="$AZAHAR_DIR/sdmc/luma/plugins/$TITLE_ID"
-PLUGIN="$PLUGIN_DIR/oras-coop.3gx"
-CONFIG_TXT="$PLUGIN_DIR/oras-coop.txt"
+PLUGIN="$PLUGIN_DIR/oras-mmo.3gx"
+CONFIG_TXT="$PLUGIN_DIR/oras-mmo.txt"
 QT_CONFIG="$AZAHAR_DIR/config/qt-config.ini"
+OLD_PLUGIN="$PLUGIN_DIR/oras-coop.3gx"   # the mod's name before it became oras-mmo
 
 # Azahar rewrites qt-config.ini on exit, which would undo the plugin-loader switch.
 while pgrep -i azahar >/dev/null 2>&1; do
@@ -51,17 +52,26 @@ while pgrep -i azahar >/dev/null 2>&1; do
 done
 
 if [ "$UNINSTALL" = 1 ]; then
-  if [ -f "$PLUGIN" ]; then rm "$PLUGIN"; echo "Removed $PLUGIN"; else echo "oras-coop is not installed."; fi
+  [ -f "$OLD_PLUGIN" ] && rm "$OLD_PLUGIN" && echo "Removed $OLD_PLUGIN"
+  if [ -f "$PLUGIN" ]; then rm "$PLUGIN"; echo "Removed $PLUGIN"; else echo "oras-mmo is not installed."; fi
   exit 0
 fi
 
 # --- Copy the plugin --------------------------------------------------------------------------
-[ -f "$HERE/oras-coop.3gx" ] || { echo "oras-coop.3gx is missing next to the installer ($HERE)." >&2; exit 1; }
+[ -f "$HERE/oras-mmo.3gx" ] || { echo "oras-mmo.3gx is missing next to the installer ($HERE)." >&2; exit 1; }
 mkdir -p "$PLUGIN_DIR"
-cp "$HERE/oras-coop.3gx" "$PLUGIN"
+# Replace an install from before the rename, keeping its settings and model cache.
+if [ -f "$OLD_PLUGIN" ]; then rm "$OLD_PLUGIN"; echo "Removed the old $OLD_PLUGIN"; fi
+if [ -f "$PLUGIN_DIR/oras-coop.txt" ] && [ ! -f "$CONFIG_TXT" ]; then
+  mv "$PLUGIN_DIR/oras-coop.txt" "$CONFIG_TXT"
+fi
+if [ -f "$PLUGIN_DIR/oras-coop-models.bin" ] && [ ! -f "$PLUGIN_DIR/oras-mmo-models.bin" ]; then
+  mv "$PLUGIN_DIR/oras-coop-models.bin" "$PLUGIN_DIR/oras-mmo-models.bin"
+fi
+cp "$HERE/oras-mmo.3gx" "$PLUGIN"
 echo "Installed plugin to $PLUGIN"
 
-# --- Player settings (oras-coop.txt, read by the plugin) --------------------------------------
+# --- Player settings (oras-mmo.txt, read by the plugin) --------------------------------------
 write_config=1
 if [ -f "$CONFIG_TXT" ]; then
   case "$(ask 'Settings already exist. Change them? (y/n)' n)" in [yY]*) ;; *) write_config=0 ;; esac
@@ -102,7 +112,7 @@ fi
 # --- Turn on Azahar's 3GX plugin loader -------------------------------------------------------
 # qt-config.ini is a QSettings file: each setting has "key\default=true|false" plus "key=value".
 mkdir -p "$(dirname "$QT_CONFIG")"
-if [ -f "$QT_CONFIG" ]; then cp "$QT_CONFIG" "$QT_CONFIG.bak-oras-coop"; else : > "$QT_CONFIG"; fi
+if [ -f "$QT_CONFIG" ]; then cp "$QT_CONFIG" "$QT_CONFIG.bak-oras-mmo"; else : > "$QT_CONFIG"; fi
 tmp="$(mktemp)"
 awk '
   BEGIN {
@@ -129,5 +139,5 @@ mv "$tmp" "$QT_CONFIG"
 echo "Enabled the 3GX plugin loader in $QT_CONFIG"
 
 echo
-echo "Done! Start Pokemon Alpha Sapphire (v1.4) in Azahar. In game, press SELECT for the oras-coop menu."
+echo "Done! Start Pokemon Alpha Sapphire (v1.4) in Azahar. In game, press SELECT for the oras-mmo menu."
 echo "If friends do not show up, check Azahar > Settings > System > \"Enable 3GX plugin loader\"."

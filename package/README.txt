@@ -1,15 +1,15 @@
-oras-coop - see your friends in Hoenn
-=====================================
+oras-mmo - play Alpha Sapphire online with your friends
+=======================================================
 
-Co-op mod for Pokemon Alpha Sapphire v1.4 on the Azahar emulator (Windows).
+Online (MMO) mod for Pokemon Alpha Sapphire v1.4 on the Azahar emulator (Windows).
 You need your own copy of the game, updated to v1.4.
 
 Install
 -------
 1. Close Azahar.
-2. Double-click "Install oras-coop.bat" and answer the questions
+2. Double-click "Install oras-mmo.bat" and answer the questions
    (your name, the server address, a room code).
-3. Start Alpha Sapphire in Azahar. Press SELECT in game for the oras-coop menu.
+3. Start Alpha Sapphire in Azahar. Press SELECT in game for the oras-mmo menu.
 4. Walk up to a friend and press A to talk: Battle (their team, under their
    name; losing is fine, your party is put back afterwards) or Trade (pick a
    Pokemon, and the friend answers by talking to you).
@@ -19,9 +19,9 @@ Install
 
 The installer copies the plugin to
   %APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\
-saves your settings next to it (oras-coop.txt), and turns on Azahar's
+saves your settings next to it (oras-mmo.txt), and turns on Azahar's
 3GX plugin loader (Emulation > Configure > System). A backup of Azahar's
-settings is kept as qt-config.ini.bak-oras-coop.
+settings is kept as qt-config.ini.bak-oras-mmo.
 
 Hosting
 -------
@@ -31,13 +31,13 @@ port 7777 on the host's router, or use a VPN such as Tailscale.
 
 Uninstall
 ---------
-Double-click "Uninstall oras-coop.bat".
+Double-click "Uninstall oras-mmo.bat".
 
 Manual install (portable Azahar, Linux)
 ---------------------------------------
-Copy oras-coop.3gx into <Azahar user folder>/sdmc/luma/plugins/000400000011C500/
+Copy oras-mmo.3gx into <Azahar user folder>/sdmc/luma/plugins/000400000011C500/
 and turn on Emulation > Configure > System > "Enable 3GX plugin loader".
-Settings go in oras-coop.txt in the same folder, for example:
+Settings go in oras-mmo.txt in the same folder, for example:
   server=192.168.1.20
   port=7777
   room=HOENN

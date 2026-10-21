@@ -6,7 +6,14 @@ ORAS MMO is a mod for Pokémon Alpha Sapphire on the [Azahar](https://azahar-emu
 Everyone plays their own game, and everyone sees everyone else walking around in it, as real
 trainers, in real time.
 
-> The repo is still called `oras-coop` (its old name), so the files are named that way.
+<p align="center">
+  <img src="docs/screenshots/friends.png" width="49%" alt="Two friends, Ann and Cal, standing next to you in Dewford Town with their names above their heads">
+  <img src="docs/screenshots/talk-menu.png" width="49%" alt="Talking to a friend opens a Battle / Trade / Cancel choice in the game's own text box">
+</p>
+<p align="center">
+  <img src="docs/screenshots/challenge.png" width="49%" alt="You are challenged by Pokémon Trainer Cal!">
+  <img src="docs/screenshots/battle.png" width="49%" alt="Battling a friend's Marshtomp">
+</p>
 
 ## What you can do
 
@@ -32,14 +39,14 @@ trainers, in real time.
 ## Install
 
 1. Download the zip for your system from the
-   [latest release](https://github.com/droid-jpg/oras-coop/releases/latest):
-   `oras-coop-…-windows.zip` or `oras-coop-…-mac.zip`.
+   [latest release](https://github.com/droid-jpg/oras-mmo/releases/latest):
+   `oras-mmo-…-windows.zip` or `oras-mmo-…-mac.zip`.
 2. Unzip it and **close Azahar**.
-3. Double-click **Install oras-coop.bat** (Mac: **Install oras-coop.command**).
+3. Double-click **Install oras-mmo.bat** (Mac: **Install oras-mmo.command**).
    It asks for your name, the server address and a room code, then sets everything up.
 4. Start Alpha Sapphire in Azahar. Press **SELECT** in game for the mod's menu.
 
-To remove it, double-click **Uninstall oras-coop**.
+To remove it, double-click **Uninstall oras-mmo**.
 
 ## Hosting a game
 
@@ -59,7 +66,7 @@ Everyone who types the same room code ends up in the same world.
 - Battles against a friend are fought by the game's AI using their team, not by them live.
 - Alpha Sapphire v1.4 only for now (no Omega Ruby, no real 3DS yet).
 
-Found a bug? [Open an issue](https://github.com/droid-jpg/oras-coop/issues).
+Found a bug? [Open an issue](https://github.com/droid-jpg/oras-mmo/issues).
 
 ---
 
@@ -81,11 +88,11 @@ state of every feature and what's next.
 
 ```bash
 bash scripts/wsl-setup.sh   # once, inside WSL Ubuntu
-bash scripts/build.sh       # → plugin/oras-coop.3gx
+bash scripts/build.sh       # → plugin/oras-mmo.3gx
 bash scripts/package.sh     # optional: the installer zips in dist/
 ```
 
-For a manual install, copy `plugin/oras-coop.3gx` to
+For a manual install, copy `plugin/oras-mmo.3gx` to
 `%APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\` and turn on
 *Emulation → Configure → System → Enable 3GX plugin loader*.
 

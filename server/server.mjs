@@ -1,4 +1,4 @@
-// oras-coop relay server. No dependencies; Node 18+.
+// oras-mmo relay server. No dependencies; Node 18+.
 // Usage: node server.mjs [port]      (default 7777, or PORT env)
 // See ../PROTOCOL.md for the frame format.
 import net from 'node:net';
@@ -213,7 +213,7 @@ setInterval(() => {
 const server = net.createServer((sock) => new Client(sock));
 server.on('error', (e) => { console.error(`server error: ${e.message}`); process.exit(1); });
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`oras-coop server listening on port ${PORT}`);
+  console.log(`oras-mmo server listening on port ${PORT}`);
   console.log('Give friends one of these addresses:');
   for (const [ifname, addrs] of Object.entries(os.networkInterfaces())) {
     for (const a of addrs ?? []) {

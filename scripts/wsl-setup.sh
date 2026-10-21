@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time toolchain setup inside WSL Ubuntu: devkitPro (3DS) + libctrpf + 3gxtool.
-# Run: bash /mnt/e/oras-coop/scripts/wsl-setup.sh   (asks for your Ubuntu sudo password)
+# Run: bash /mnt/e/oras-mmo/scripts/wsl-setup.sh   (asks for your Ubuntu sudo password)
 set -euo pipefail
 
 sudo apt-get update
@@ -17,7 +17,7 @@ fi
 
 conf=/opt/devkitpro/pacman/etc/pacman.conf
 if ! grep -q '^\[thepixellizeross-lib\]' "$conf"; then
-  sudo cp "$conf" "$conf.bak-oras-coop"
+  sudo cp "$conf" "$conf.bak-oras-mmo"
   sudo tee -a "$conf" >/dev/null <<'EOF'
 
 [thepixellizeross-lib]

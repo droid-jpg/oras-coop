@@ -1,4 +1,4 @@
-# oras-coop wire protocol (v1)
+# oras-mmo wire protocol (v1)
 
 TCP, little-endian, **fixed 48-byte frames**. Every frame starts with:
 

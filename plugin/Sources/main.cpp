@@ -1,4 +1,4 @@
-// oras-coop: see friends in Hoenn. Alpha Sapphire 1.4, read-only.
+// oras-mmo: see friends in Hoenn. Alpha Sapphire 1.4, read-only.
 #include <3ds.h>
 #include <cctype>
 #include <cstdio>
@@ -233,7 +233,7 @@ void MenuStatus(MenuEntry*) {
     } else {
         snprintf(buf, sizeof buf, "Player object: not found\n(are you in the overworld?)");
     }
-    MessageBox("oras-coop status", net + "\n" + cfg + "\n\n" + buf)();
+    MessageBox("oras-mmo status", net + "\n" + cfg + "\n\n" + buf)();
 }
 
 } // namespace
@@ -249,7 +249,7 @@ void OnProcessExit() {
 int main() {
     g_session.cfg.Load();
 
-    PluginMenu* menu = new PluginMenu("oras-coop", 0, 3, 0,
+    PluginMenu* menu = new PluginMenu("oras-mmo", 0, 3, 1,
         "See your friends in Hoenn.\nAlpha Sapphire 1.4. Read-only unless\n\"Real models\" is turned on.");
     menu->SynchronizeWithFrame(true);
 

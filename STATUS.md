@@ -1,4 +1,4 @@
-# oras-coop — status (updated 2026-10-20)
+# oras-mmo — status (updated 2026-10-20)
 
 Co-op mod for **Pokémon Alpha Sapphire v1.4** on Azahar: a 3GX plugin plus a Node relay server.
 Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, function list).
@@ -28,7 +28,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 | Game menus and text boxes | ✅ the overlay steps aside while the X menu or a game text box is open (player mm+0x08 bits 0x8 / 0x02000000) |
 | Doors and map edges | ✅ a friend leaving your map leaves a fading "Name -> Place" note where they left; arriving shows "Name arrived" |
 | "Name is inside" on doors and warps | ✅ every map change seen (yours, and every friend's on any map) teaches a warp: map A at spot P leads to B, and B's arrival spot leads back. A friend on another map gets a steady label on the door/edge of your map that leads toward them (up to 4 doors deep): "Ann is inside" (same place name: a building or another room of this cave) or "Cal, Dee are in Littleroot Town". Fly, Teleport, Dig, Escape Rope, soaring and whiteouts aren't warps: the mover flags them (STATE status bit 3, set for 5 s after a menu, 2 s+ of script control or 3 s+ off the field). Kept in memory for the session. Tested with fake friends walking through a "door" (and one flagged as flying: no label) |
-| Friends in other outfits / models | ✅ any field model a friend's game reports, not just Brendan/May: the map-load hook adds it too, with the descriptor read from the game's own archive (`FUN_0019C678` + `FUN_00128E4C`) on the plain field and remembered in `oras-coop-models.bin` next to the plugin, so it's there from the first map after Continue. Status shows "Models: 13C (read) loaded, AB loaded". Tested with a fake friend sending model 0x13C (a cyclist): stand-in until the next map load, then their own model. Note: vanilla ORAS only ever uses 0xAB/0xAC for the player; this covers modded games and future outfits |
+| Friends in other outfits / models | ✅ any field model a friend's game reports, not just Brendan/May: the map-load hook adds it too, with the descriptor read from the game's own archive (`FUN_0019C678` + `FUN_00128E4C`) on the plain field and remembered in `oras-mmo-models.bin` next to the plugin, so it's there from the first map after Continue. Status shows "Models: 13C (read) loaded, AB loaded". Tested with a fake friend sending model 0x13C (a cyclist): stand-in until the next map load, then their own model. Note: vanilla ORAS only ever uses 0xAB/0xAC for the player; this covers modded games and future outfits |
 | Notices | ✅ "Name joined!", "Name left.", chat and "Name is talking to you!" show one at a time in a small box styled like the game's text box at the top of the screen (3.5 s each). They never take control from you (tested: walking straight through join, chat and leave). Notices that arrive during a battle, menu or text box wait until it's over |
 | Joins/leaves during battles and cutscenes | ✅ nothing is spawned or deleted while DllField is unloaded (battles) or while a script, text box or menu is up; it happens once that ends. Tested: three friends joining and leaving on your map mid-battle, and a friend leaving while you were in a text box with them |
 | Busy friends keep animating | ✅ a friend walking under script control (cutscene) moves its legs instead of sliding |
@@ -60,11 +60,11 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 ## How to pick it up
 
 1. Build (WSL, because Smart App Control blocks devkitARM on Windows):
-   `bash /mnt/e/oras-coop/scripts/build.sh`
-2. Install: copy `plugin/oras-coop.3gx` to
+   `bash /mnt/e/oras-mmo/scripts/build.sh`
+2. Install: copy `plugin/oras-mmo.3gx` to
    `%APPDATA%\Azahar\sdmc\luma\plugins\000400000011C500\`
-3. Server: `node E:\oras-coop\server\server.mjs` (port 7777). Fake friend for testing:
-   `node E:\oras-coop\tools\fakefriend.mjs --map <id> --x <x> --y <y> --radius 30 --speed 0.15 --stopgo`
+3. Server: `node E:\oras-mmo\server\server.mjs` (port 7777). Fake friend for testing:
+   `node E:\oras-mmo\tools\fakefriend.mjs --map <id> --x <x> --y <y> --radius 30 --speed 0.15 --stopgo`
    (`--anim 0x19` run clip, `--model 0xab` May, `--x2/--y2 --after N` jump to test collision,
    `--map2 <id> --after N` walk through a "door" to another map, `--nowarp` flag that as Fly,
    `--party <file>` a team to battle, `--listen` prints others' states incl. height z)
@@ -76,16 +76,16 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 
 ## Current machine state
 
-- Azahar settings changed: plugin loader **on**, GDB stub **on** (backup: `qt-config.ini.bak-oras-coop`).
+- Azahar settings changed: plugin loader **on**, GDB stub **on** (backup: `qt-config.ini.bak-oras-mmo`).
   Turn the GDB stub off for normal play — it slows things when a debugger is attached.
-- Plugin config `oras-coop.txt` has `puppets=1` (Real models on).
+- Plugin config `oras-mmo.txt` has `puppets=1` (Real models on).
 - GDB stub port is now **24690** (`GDB_PORT=24690 node mem.mjs ...`).
 - Azahar has a second input profile **Keyboard** (A=A, B=S, X=Z, Y=X, Start=M, Select=N,
   arrows = Circle Pad) for automated testing; **Default** (the controller) is the active one.
 - Save file: never saved by automation. Tests on 2026-10-20 wrote memory only (a badge bit,
   party slot 0's species, box slot 1) and restored each one.
 - Plugin menu (SELECT) also has two debug entries: spawn test character / action on test character.
-- `oras-coop-models.bin` next to the plugin holds the descriptor of model 0x13C from the outfit
+- `oras-mmo-models.bin` next to the plugin holds the descriptor of model 0x13C from the outfit
   test (harmless: only used when a friend reports that model; delete it to forget it).
 
 ## Ideas queue

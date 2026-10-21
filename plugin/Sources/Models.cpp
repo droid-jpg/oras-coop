@@ -65,7 +65,7 @@ const Cached* FindCached(u16 model) {
 // Descriptors read before are kept on the SD card (0x18 bytes each, next to the plugin), so a
 // friend's outfit is loaded from the first map after Continue: that map loads before we could
 // read anything from the game.
-const char* const CACHE_PATH = "oras-coop-models.bin";
+const char* const CACHE_PATH = "oras-mmo-models.bin";
 
 void LoadCacheFile() {
     File f(CACHE_PATH, File::READ);

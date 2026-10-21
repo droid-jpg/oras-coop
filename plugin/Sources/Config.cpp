@@ -1,4 +1,4 @@
-// Simple key=value config stored next to the plugin as oras-coop.txt.
+// Simple key=value config stored next to the plugin as oras-mmo.txt.
 #include "Session.hpp"
 #include <cstdlib>
 
@@ -6,10 +6,11 @@ using namespace CTRPluginFramework;
 
 namespace coop {
 
-static const char* CONFIG_PATH = "oras-coop.txt";
+static const char* CONFIG_PATH = "oras-mmo.txt";
 
 void Config::Load() {
     File f(CONFIG_PATH, File::READ);
+    if (!f.IsOpen()) File::Open(f, "oras-coop.txt", File::READ); // name before the rename
     if (!f.IsOpen()) return;
     u32 size = f.GetSize();
     if (size == 0 || size > 4096) return;

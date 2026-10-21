@@ -928,7 +928,7 @@ void DrawBattlePanel(const Screen& s, const Remote& r) {
 
 void DrawStatus(const Screen& s, const View& v) {
     bool ok = v.status == NetStatus::Connected;
-    std::string line = ok ? ("oras-coop  " + v.room + "  #" + std::to_string(v.myId)) : v.statusText;
+    std::string line = ok ? ("oras-mmo  " + v.room + "  #" + std::to_string(v.myId)) : v.statusText;
     int w = TextWidth(line) + 10;
     Rect(s, 2, 2, w, 13, kBg);
     Rect(s, 2, 2, 3, 13, ok ? kOk : kBad);

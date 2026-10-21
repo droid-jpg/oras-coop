@@ -1,6 +1,6 @@
-# oras-coop installer for Azahar (Windows). Run through "Install oras-coop.bat".
+# oras-mmo installer for Azahar (Windows). Run through "Install oras-mmo.bat".
 #   -AzaharDir <path>  Azahar user folder (default %APPDATA%\Azahar, or the portable "user" folder)
-#   -Uninstall         remove the plugin (keeps oras-coop.txt and Azahar's settings)
+#   -Uninstall         remove the plugin (keeps oras-mmo.txt and Azahar's settings)
 param(
     [string]$AzaharDir,
     [switch]$Uninstall
@@ -37,9 +37,10 @@ $AzaharDir = $AzaharDir.Trim('"', ' ')
 if (-not (Test-Path $AzaharDir)) { New-Item -ItemType Directory -Path $AzaharDir | Out-Null }
 
 $PluginDir = Join-Path $AzaharDir "sdmc\luma\plugins\$TitleId"
-$Plugin    = Join-Path $PluginDir 'oras-coop.3gx'
-$ConfigTxt = Join-Path $PluginDir 'oras-coop.txt'
+$Plugin    = Join-Path $PluginDir 'oras-mmo.3gx'
+$ConfigTxt = Join-Path $PluginDir 'oras-mmo.txt'
 $QtConfig  = Join-Path $AzaharDir 'config\qt-config.ini'
+$OldPlugin = Join-Path $PluginDir 'oras-coop.3gx'   # the mod's name before it became oras-mmo
 
 # Azahar rewrites qt-config.ini on exit, which would undo the plugin-loader switch.
 while (Get-Process -Name 'azahar*' -ErrorAction SilentlyContinue) {
@@ -47,19 +48,27 @@ while (Get-Process -Name 'azahar*' -ErrorAction SilentlyContinue) {
 }
 
 if ($Uninstall) {
+    if (Test-Path $OldPlugin) { Remove-Item $OldPlugin; Write-Host "Removed $OldPlugin" }
     if (Test-Path $Plugin) { Remove-Item $Plugin; Write-Host "Removed $Plugin" }
-    else { Write-Host 'oras-coop is not installed.' }
+    else { Write-Host 'oras-mmo is not installed.' }
     exit 0
 }
 
 # --- Copy the plugin --------------------------------------------------------------------------
-$Src = Join-Path $Here 'oras-coop.3gx'
-if (-not (Test-Path $Src)) { throw "oras-coop.3gx is missing next to the installer ($Here)." }
+$Src = Join-Path $Here 'oras-mmo.3gx'
+if (-not (Test-Path $Src)) { throw "oras-mmo.3gx is missing next to the installer ($Here)." }
 New-Item -ItemType Directory -Force -Path $PluginDir | Out-Null
+# Replace an install from before the rename, keeping its settings and model cache.
+if (Test-Path $OldPlugin) { Remove-Item $OldPlugin; Write-Host "Removed the old $OldPlugin" }
+foreach ($n in '.txt', '-models.bin') {
+    $old = Join-Path $PluginDir "oras-coop$n"
+    $new = Join-Path $PluginDir "oras-mmo$n"
+    if ((Test-Path $old) -and -not (Test-Path $new)) { Move-Item $old $new }
+}
 Copy-Item $Src $Plugin -Force
 Write-Host "Installed plugin to $Plugin"
 
-# --- Player settings (oras-coop.txt, read by the plugin) --------------------------------------
+# --- Player settings (oras-mmo.txt, read by the plugin) --------------------------------------
 $writeConfig = $true
 if (Test-Path $ConfigTxt) {
     $writeConfig = (Ask 'Settings already exist. Change them? (y/n)' 'n') -match '^[yY]'
@@ -123,7 +132,7 @@ function Set-IniKeys([string[]]$lines, [string]$section, [System.Collections.IDi
 
 $lines = @()
 if (Test-Path $QtConfig) {
-    Copy-Item $QtConfig "$QtConfig.bak-oras-coop" -Force
+    Copy-Item $QtConfig "$QtConfig.bak-oras-mmo" -Force
     $lines = [System.IO.File]::ReadAllLines($QtConfig)
 } else {
     New-Item -ItemType Directory -Force -Path (Split-Path $QtConfig) | Out-Null
@@ -138,5 +147,5 @@ $lines = Set-IniKeys $lines 'System' ([ordered]@{
 Write-Host "Enabled the 3GX plugin loader in $QtConfig"
 
 Write-Host ''
-Write-Host 'Done! Start Pokemon Alpha Sapphire (v1.4) in Azahar. In game, press SELECT for the oras-coop menu.'
+Write-Host 'Done! Start Pokemon Alpha Sapphire (v1.4) in Azahar. In game, press SELECT for the oras-mmo menu.'
 Write-Host 'If friends do not show up, check Emulation > Configure > System > "Enable 3GX plugin loader".'
