@@ -1,0 +1,474 @@
+// GPU overlay: the overlay is drawn into a texture per screen and composited over the game's
+// frame by the 3DS GPU, inside the game's own command list, so Azahar keeps the game upscaled.
+// (Writing pixels into the screen with the CPU, as CTRPF's OSD does, makes Azahar drop its
+// upscaled copy of the frame: the whole screen falls back to the native resolution.)
+// See re/NOTES.md, "GPU: how a frame reaches the screen".
+//
+// The game (NintendoWare on nn::gx) renders each screen into a 256x512 RGBA8 render target in
+// VRAM, then FUN_00129F4C(display, renderTarget) queues the copy to the display: it records an
+// nngx transfer request in the current command list, then closes the open chunk of GPU commands
+// (FUN_0014298C). We hook it: before the original runs, our commands go into the game's command
+// buffer (write pointer at 0x0061E0BC, end at 0x0061E0C0) and we close that chunk ourselves, so
+// the GPU draws our quad into the render target right before the copy.
+//
+// Drawing (GpuBegin / GpuRect / GpuText / GpuEnd) happens in the OSD callback, after the frame
+// has been shown; each screen has two textures so we never draw into the one the GPU may still be
+// reading. An empty overlay sends no GPU commands at all.
+#include <3ds.h>
+#include <CTRPluginFramework.hpp>
+#include <cstring>
+#include "Game.hpp"
+
+using namespace CTRPluginFramework;
+
+namespace game {
+
+namespace {
+
+constexpr u32 FN_TRANSFER = 0x00129F4C;     // (display descriptor, render target)
+constexpr u32 FN_SPLIT = 0x0014298C;        // closes the open command chunk
+constexpr u32 CMD_PTR = 0x0061E0BC, CMD_END = 0x0061E0C0;
+constexpr u32 DISPLAY_ID = 8;               // descriptor +8: 0 top, 1 bottom, 2 top right eye
+
+// Render target: the game's copy reads its size with FUN_0016B620 (width) / FUN_0016B5D0
+// (height) and its colour buffer from the descriptor that virtual +0x10 of the buffer object at
+// rt+0x1C returns (+0x14). Both screens use the same 256x512 RGBA8 buffer in VRAM, one after the
+// other. A screen shows buffer x 0..240, y 0..W (checked with a test pattern): screen x = W -
+// buffer y, screen y = 240 - buffer x.
+constexpr u32 FN_RT_WIDTH = 0x0016B620, FN_RT_HEIGHT = 0x0016B5D0;
+constexpr u32 RT_BUFFERS = 0x1C, BUF_DESC_VFN = 0x10, DESC_COLOR = 0x14;
+
+constexpr int TEX_W = 512, TEX_H = 256, SCREEN_H = 240;
+constexpr u32 TEX_BYTES = TEX_W * TEX_H * 2;
+constexpr int MAX_DIRTY = 48;
+constexpr u32 STALE_CALLS = 5; // GpuBegin calls without a transfer in between: fall back to the CPU
+
+// picasso output of Shaders/overlay.v.pica (mov o0, v0; mov o1, v1; end).
+alignas(4) u8 s_shbin[] = {
+    0x44, 0x56, 0x4c, 0x42, 0x01, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x44, 0x56, 0x4c, 0x50,
+    0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x00, 0x10, 0x20, 0x4c, 0x00, 0x00, 0x00, 0x88,
+    0x6f, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44, 0x56, 0x4c, 0x45, 0x02, 0x10, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00,
+    0x03, 0x00, 0x01, 0x00, 0x0f, 0x00, 0x00, 0x00,
+};
+
+// The 6x10 console font CTRPF's Screen::Draw uses (its Renderer's `font` table), characters
+// 0x20..0x7E: 10 rows per glyph, bit 7 = leftmost of the 6 columns.
+const u8 kFont[95][10] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //  
+    0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x00, 0x00, // !
+    0x28, 0x28, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // "
+    0x00, 0x00, 0x28, 0x7c, 0x28, 0x28, 0x7c, 0x28, 0x00, 0x00, // #
+    0x10, 0x38, 0x54, 0x50, 0x38, 0x14, 0x54, 0x38, 0x10, 0x00, // $
+    0x00, 0x64, 0x64, 0x08, 0x10, 0x20, 0x4c, 0x4c, 0x00, 0x00, // %
+    0x00, 0x30, 0x48, 0x50, 0x20, 0x54, 0x48, 0x34, 0x00, 0x00, // &
+    0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // '
+    0x08, 0x10, 0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08, 0x00, // (
+    0x20, 0x10, 0x08, 0x08, 0x08, 0x08, 0x08, 0x10, 0x20, 0x00, // )
+    0x00, 0x10, 0x54, 0x38, 0x54, 0x10, 0x00, 0x00, 0x00, 0x00, // *
+    0x00, 0x00, 0x10, 0x10, 0x7c, 0x10, 0x10, 0x00, 0x00, 0x00, // +
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x10, 0x20, // ,
+    0x00, 0x00, 0x00, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00, // -
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, // .
+    0x04, 0x04, 0x08, 0x08, 0x10, 0x10, 0x20, 0x20, 0x40, 0x40, // /
+    0x00, 0x38, 0x44, 0x4c, 0x54, 0x64, 0x44, 0x38, 0x00, 0x00, // 0
+    0x00, 0x10, 0x30, 0x50, 0x10, 0x10, 0x10, 0x7c, 0x00, 0x00, // 1
+    0x00, 0x38, 0x44, 0x04, 0x08, 0x10, 0x20, 0x7c, 0x00, 0x00, // 2
+    0x00, 0x38, 0x44, 0x04, 0x18, 0x04, 0x44, 0x38, 0x00, 0x00, // 3
+    0x00, 0x08, 0x18, 0x28, 0x48, 0x7c, 0x08, 0x08, 0x00, 0x00, // 4
+    0x00, 0x7c, 0x40, 0x78, 0x04, 0x04, 0x44, 0x38, 0x00, 0x00, // 5
+    0x00, 0x18, 0x20, 0x40, 0x78, 0x44, 0x44, 0x38, 0x00, 0x00, // 6
+    0x00, 0x7c, 0x04, 0x04, 0x08, 0x10, 0x10, 0x10, 0x00, 0x00, // 7
+    0x00, 0x38, 0x44, 0x44, 0x38, 0x44, 0x44, 0x38, 0x00, 0x00, // 8
+    0x00, 0x38, 0x44, 0x44, 0x3c, 0x04, 0x08, 0x30, 0x00, 0x00, // 9
+    0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, // :
+    0x00, 0x00, 0x00, 0x30, 0x30, 0x00, 0x30, 0x30, 0x10, 0x20, // ;
+    0x00, 0x04, 0x08, 0x10, 0x20, 0x10, 0x08, 0x04, 0x00, 0x00, // <
+    0x00, 0x00, 0x00, 0x7c, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x00, // =
+    0x00, 0x20, 0x10, 0x08, 0x04, 0x08, 0x10, 0x20, 0x00, 0x00, // >
+    0x00, 0x38, 0x44, 0x04, 0x08, 0x10, 0x00, 0x10, 0x00, 0x00, // ?
+    0x00, 0x38, 0x44, 0x5c, 0x54, 0x5c, 0x40, 0x38, 0x00, 0x00, // @
+    0x00, 0x10, 0x28, 0x44, 0x44, 0x7c, 0x44, 0x44, 0x00, 0x00, // A
+    0x00, 0x78, 0x24, 0x24, 0x38, 0x24, 0x24, 0x78, 0x00, 0x00, // B
+    0x00, 0x38, 0x44, 0x40, 0x40, 0x40, 0x44, 0x38, 0x00, 0x00, // C
+    0x00, 0x78, 0x24, 0x24, 0x24, 0x24, 0x24, 0x78, 0x00, 0x00, // D
+    0x00, 0x7c, 0x40, 0x40, 0x78, 0x40, 0x40, 0x7c, 0x00, 0x00, // E
+    0x00, 0x7c, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x00, 0x00, // F
+    0x00, 0x38, 0x44, 0x40, 0x5c, 0x44, 0x44, 0x38, 0x00, 0x00, // G
+    0x00, 0x44, 0x44, 0x44, 0x7c, 0x44, 0x44, 0x44, 0x00, 0x00, // H
+    0x00, 0x38, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0x00, 0x00, // I
+    0x00, 0x1c, 0x08, 0x08, 0x08, 0x48, 0x48, 0x30, 0x00, 0x00, // J
+    0x00, 0x44, 0x48, 0x50, 0x60, 0x50, 0x48, 0x44, 0x00, 0x00, // K
+    0x00, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7c, 0x00, 0x00, // L
+    0x00, 0x44, 0x6c, 0x54, 0x54, 0x44, 0x44, 0x44, 0x00, 0x00, // M
+    0x00, 0x44, 0x64, 0x54, 0x4c, 0x44, 0x44, 0x44, 0x00, 0x00, // N
+    0x00, 0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0x00, 0x00, // O
+    0x00, 0x78, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x00, 0x00, // P
+    0x00, 0x38, 0x44, 0x44, 0x44, 0x54, 0x48, 0x34, 0x00, 0x00, // Q
+    0x00, 0x78, 0x44, 0x44, 0x78, 0x50, 0x48, 0x44, 0x00, 0x00, // R
+    0x00, 0x38, 0x44, 0x40, 0x38, 0x04, 0x44, 0x38, 0x00, 0x00, // S
+    0x00, 0x7c, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x00, // T
+    0x00, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0x00, 0x00, // U
+    0x00, 0x44, 0x44, 0x44, 0x44, 0x44, 0x28, 0x10, 0x00, 0x00, // V
+    0x00, 0x44, 0x44, 0x44, 0x54, 0x54, 0x6c, 0x44, 0x00, 0x00, // W
+    0x00, 0x44, 0x44, 0x28, 0x10, 0x28, 0x44, 0x44, 0x00, 0x00, // X
+    0x00, 0x44, 0x44, 0x44, 0x28, 0x10, 0x10, 0x10, 0x00, 0x00, // Y
+    0x00, 0x7c, 0x04, 0x08, 0x10, 0x20, 0x40, 0x7c, 0x00, 0x00, // Z
+    0x18, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x18, 0x00, // [
+    0x40, 0x40, 0x20, 0x20, 0x10, 0x10, 0x08, 0x08, 0x04, 0x04, // backslash
+    0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x30, 0x00, // ]
+    0x00, 0x10, 0x28, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ^
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7c, 0x00, // _
+    0x20, 0x10, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // `
+    0x00, 0x00, 0x00, 0x38, 0x04, 0x3c, 0x44, 0x3c, 0x00, 0x00, // a
+    0x00, 0x40, 0x40, 0x58, 0x64, 0x44, 0x64, 0x58, 0x00, 0x00, // b
+    0x00, 0x00, 0x00, 0x38, 0x44, 0x40, 0x44, 0x38, 0x00, 0x00, // c
+    0x00, 0x04, 0x04, 0x34, 0x4c, 0x44, 0x4c, 0x34, 0x00, 0x00, // d
+    0x00, 0x00, 0x00, 0x38, 0x44, 0x7c, 0x40, 0x3c, 0x00, 0x00, // e
+    0x00, 0x0c, 0x10, 0x10, 0x38, 0x10, 0x10, 0x10, 0x00, 0x00, // f
+    0x00, 0x00, 0x00, 0x34, 0x4c, 0x44, 0x4c, 0x34, 0x04, 0x38, // g
+    0x00, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x44, 0x00, 0x00, // h
+    0x00, 0x10, 0x00, 0x30, 0x10, 0x10, 0x10, 0x38, 0x00, 0x00, // i
+    0x00, 0x10, 0x00, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x60, // j
+    0x00, 0x40, 0x40, 0x48, 0x50, 0x70, 0x48, 0x44, 0x00, 0x00, // k
+    0x00, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0x00, 0x00, // l
+    0x00, 0x00, 0x00, 0x68, 0x54, 0x54, 0x54, 0x54, 0x00, 0x00, // m
+    0x00, 0x00, 0x00, 0x58, 0x64, 0x44, 0x44, 0x44, 0x00, 0x00, // n
+    0x00, 0x00, 0x00, 0x38, 0x44, 0x44, 0x44, 0x38, 0x00, 0x00, // o
+    0x00, 0x00, 0x00, 0x58, 0x64, 0x44, 0x64, 0x58, 0x40, 0x40, // p
+    0x00, 0x00, 0x00, 0x34, 0x4c, 0x44, 0x4c, 0x34, 0x04, 0x04, // q
+    0x00, 0x00, 0x00, 0x58, 0x64, 0x40, 0x40, 0x40, 0x00, 0x00, // r
+    0x00, 0x00, 0x00, 0x3c, 0x40, 0x38, 0x04, 0x78, 0x00, 0x00, // s
+    0x00, 0x10, 0x10, 0x38, 0x10, 0x10, 0x10, 0x0c, 0x00, 0x00, // t
+    0x00, 0x00, 0x00, 0x44, 0x44, 0x44, 0x4c, 0x34, 0x00, 0x00, // u
+    0x00, 0x00, 0x00, 0x44, 0x44, 0x44, 0x28, 0x10, 0x00, 0x00, // v
+    0x00, 0x00, 0x00, 0x54, 0x54, 0x54, 0x54, 0x28, 0x00, 0x00, // w
+    0x00, 0x00, 0x00, 0x44, 0x28, 0x10, 0x28, 0x44, 0x00, 0x00, // x
+    0x00, 0x00, 0x00, 0x44, 0x44, 0x44, 0x44, 0x3c, 0x04, 0x38, // y
+    0x00, 0x00, 0x00, 0x7c, 0x08, 0x10, 0x20, 0x7c, 0x00, 0x00, // z
+    0x08, 0x10, 0x10, 0x10, 0x20, 0x10, 0x10, 0x10, 0x08, 0x00, // {
+    0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0x10, 0x10, 0x00, // |
+    0x20, 0x10, 0x10, 0x10, 0x08, 0x10, 0x10, 0x10, 0x20, 0x00, // }
+    0x00, 0x00, 0x00, 0x00, 0x20, 0x54, 0x08, 0x00, 0x00, 0x00, // ~
+};
+
+struct Rect16 { s16 x, y, w, h; };
+
+struct Buffer {
+    u16* tex = nullptr;  // TEX_W x TEX_H RGBA4, tiled (8x8 Morton tiles), rows bottom-up
+    bool used = false;   // something was drawn this time
+    int dirtyCount = 0;  // what to clear before reuse; > MAX_DIRTY = everything
+    Rect16 dirty[MAX_DIRTY];
+};
+
+struct Layer {
+    int width;                // 400 top, 320 bottom
+    Buffer buf[2];
+    volatile int front = -1;  // what the GPU draws; -1 = nothing yet
+    int back = 0;
+    volatile u32 transfers = 0;
+    u32 seen = 0, missed = 0;
+    bool drawing = false;
+};
+
+Hook s_hook;
+DVLB_s* s_dvlb = nullptr;
+shaderProgram_s s_prog;
+Layer s_layers[2] = {{400}, {320}};
+bool s_ready = false, s_failed = false;
+bool s_enabled = true;
+
+u32 F24(float f) {
+    if (f == 0) return 0;
+    u32 i;
+    std::memcpy(&i, &f, 4);
+    return ((i & 0x7FFFFF) >> 7) | ((((i >> 23) & 0xFF) - 64) << 16) | ((i >> 31) << 23);
+}
+
+u32 F31(float f) {
+    if (f == 0) return 0;
+    u32 i;
+    std::memcpy(&i, &f, 4);
+    return (i & 0x7FFFFF) | ((((i >> 23) & 0xFF) - 64) << 23) | ((i >> 31) << 30);
+}
+
+// Texel (x, y), y down from the top. The GPU reads textures bottom-up (t = 0 is the last row in
+// memory), so row y is stored as TEX_H - 1 - y.
+inline u32 TexelIndex(int x, int y) {
+    static const u8 morton[8] = {0, 1, 4, 5, 16, 17, 20, 21};
+    y = TEX_H - 1 - y;
+    return ((y >> 3) * (TEX_W >> 3) + (x >> 3)) * 64 + morton[x & 7] + 2 * morton[y & 7];
+}
+
+inline u16 Pack(u32 r, u32 g, u32 b, u32 a) { return (u16)((r >> 4) << 12 | (g >> 4) << 8 | (b >> 4) << 4 | (a >> 4)); }
+
+// Straight-alpha "over" of (r, g, b, a) onto one texel.
+inline void Blend(u16& t, u32 r, u32 g, u32 b, u32 a) {
+    if (a >= 0xF0) { t = Pack(r, g, b, 255); return; }
+    u32 da = (t & 0xF) * 17;
+    if (!da) { t = Pack(r, g, b, a); return; }
+    u32 dr = (t >> 12) * 17, dg = (t >> 8 & 0xF) * 17, db = (t >> 4 & 0xF) * 17;
+    u32 keep = da * (255 - a) / 255;  // destination's share
+    u32 oa = a + keep;
+    t = Pack((r * a + dr * keep) / oa, (g * a + dg * keep) / oa, (b * a + db * keep) / oa, oa);
+}
+
+void MarkDirty(Buffer& b, int x, int y, int w, int h) {
+    b.used = true;
+    if (b.dirtyCount > MAX_DIRTY) return;
+    if (b.dirtyCount == MAX_DIRTY) { b.dirtyCount = MAX_DIRTY + 1; return; }
+    b.dirty[b.dirtyCount++] = {(s16)x, (s16)y, (s16)w, (s16)h};
+}
+
+void Clear(Buffer& b) {
+    if (b.dirtyCount > MAX_DIRTY) {
+        std::memset(b.tex, 0, TEX_BYTES);
+    } else {
+        for (int i = 0; i < b.dirtyCount; i++) {
+            const Rect16& r = b.dirty[i];
+            for (int y = r.y; y < r.y + r.h; y++)
+                for (int x = r.x; x < r.x + r.w; x++) b.tex[TexelIndex(x, y)] = 0;
+        }
+    }
+    b.dirtyCount = 0;
+    b.used = false;
+}
+
+// Clips to the screen; false if nothing is left.
+bool Clip(const Layer& l, int& x, int& y, int& w, int& h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > l.width) w = l.width - x;
+    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    return w > 0 && h > 0;
+}
+
+void Fill(Layer& l, int x, int y, int w, int h, u32 rgba) {
+    if (!Clip(l, x, y, w, h)) return;
+    u32 r = rgba >> 24, g = rgba >> 16 & 0xFF, b = rgba >> 8 & 0xFF, a = rgba & 0xFF;
+    if (!a) return;
+    Buffer& buf = l.buf[l.back];
+    MarkDirty(buf, x, y, w, h);
+    for (int j = y; j < y + h; j++)
+        for (int i = x; i < x + w; i++) Blend(buf.tex[TexelIndex(i, j)], r, g, b, a);
+}
+
+bool Setup() {
+    if (s_ready || s_failed) return s_ready;
+    s_failed = true; // only one try
+    // Our own linear (GPU-visible) memory. The game's nngx allocator hands out scene memory that
+    // the next scene reuses (the title screen's textures landed on top of ours).
+    for (Layer& l : s_layers) {
+        for (Buffer& b : l.buf) {
+            u32 a = 0;
+            Result r = svcControlMemory(&a, 0, 0, TEX_BYTES, MEMOP_ALLOC_LINEAR, (MemPerm)(MEMPERM_READ | MEMPERM_WRITE));
+            if (R_FAILED(r) || !osConvertVirtToPhys((void*)a) || (a & 0x7F)) return false;
+            b.tex = reinterpret_cast<u16*>(a);
+            std::memset(b.tex, 0, TEX_BYTES);
+        }
+    }
+    s_dvlb = DVLB_ParseFile(reinterpret_cast<u32*>(s_shbin), sizeof s_shbin);
+    if (!s_dvlb) return false;
+    shaderProgramInit(&s_prog);
+    shaderProgramSetVsh(&s_prog, &s_dvlb->DVLE[0]);
+    s_failed = false;
+    s_ready = true;
+    return true;
+}
+
+void Vertex(float x, float y, float u, float v) {
+    auto attrib = [](float a, float b, float c, float d) {
+        u32 fx = F24(a), fy = F24(b), fz = F24(c), fw = F24(d);
+        u32 p[3] = {fw << 8 | (fz >> 16 & 0xFF), fz << 16 | (fy >> 8 & 0xFFFF), fy << 24 | (fx & 0xFFFFFF)};
+        GPUCMD_AddIncrementalWrites(GPUREG_FIXEDATTRIB_DATA0, p, 3);
+    };
+    attrib(x, y, -0.5f, 1.0f);
+    attrib(u, v, 0.0f, 0.0f);
+}
+
+// Our draw: the render target as the framebuffer (no depth), blending on, the texture through
+// TexEnv stage 0, the passthrough shader, one quad over the visible part of the buffer.
+void EmitOverlay(u32 rt, const u16* tex, int screenW) {
+    u32 bufs = *reinterpret_cast<u32*>(rt + RT_BUFFERS);
+    if (bufs < 0x08000000 || bufs >= 0x10000000) return;
+    u32 vtable = *reinterpret_cast<u32*>(bufs);
+    if (vtable < 0x00100000 || vtable >= 0x00800000) return;
+    u32 desc = reinterpret_cast<u32 (*)(u32)>(*reinterpret_cast<u32*>(vtable + BUF_DESC_VFN))(bufs);
+    if (desc < 0x08000000 || desc >= 0x10000000) return;
+    u32 w = reinterpret_cast<u32 (*)(u32)>(FN_RT_WIDTH)(rt), h = reinterpret_cast<u32 (*)(u32)>(FN_RT_HEIGHT)(rt);
+    u32 color = *reinterpret_cast<u32*>(desc + DESC_COLOR);
+    if (w < SCREEN_H || w > 1024 || h < (u32)screenW || h > 1024 || color < 0x1F000000 || color >= 0x1F600000) return;
+
+    u32* ptr = *reinterpret_cast<u32**>(CMD_PTR);
+    u32* end = *reinterpret_cast<u32**>(CMD_END);
+    if (!ptr || end - ptr < 1024 || ((u32)ptr & 7)) return;
+    GPUCMD_SetBuffer(ptr, end - ptr, 0);
+
+    // Framebuffer.
+    GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
+    u32 fb[3] = {0, osConvertVirtToPhys((void*)color) >> 3, 0x01000000 | ((h - 1) & 0xFFF) << 12 | (w & 0xFFF)};
+    GPUCMD_AddIncrementalWrites(GPUREG_DEPTHBUFFER_LOC, fb, 3);
+    GPUCMD_AddWrite(GPUREG_RENDERBUF_DIM, fb[2]);
+    GPUCMD_AddWrite(GPUREG_COLORBUFFER_FORMAT, 0x00000002); // RGBA8
+    GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_BLOCK32, 0);
+    u32 masks[4] = {0xF, 0xF, 0, 0};
+    GPUCMD_AddIncrementalWrites(GPUREG_COLORBUFFER_READ, masks, 4);
+
+    // Viewport over the whole buffer, no culling/scissor/clip planes, plain depth mapping.
+    u32 vp[4] = {F24(w / 2.0f), F31(2.0f / w) << 1, F24(h / 2.0f), F31(2.0f / h) << 1};
+    GPUCMD_AddIncrementalWrites(GPUREG_VIEWPORT_WIDTH, vp, 4);
+    GPUCMD_AddWrite(GPUREG_VIEWPORT_XY, 0);
+    GPUCMD_AddWrite(GPUREG_FACECULLING_CONFIG, 0);
+    GPUCMD_AddWrite(GPUREG_SCISSORTEST_MODE, 0);
+    GPUCMD_AddWrite(GPUREG_FRAGOP_CLIP, 0);
+    GPUCMD_AddWrite(GPUREG_DEPTHMAP_ENABLE, 1);
+    GPUCMD_AddWrite(GPUREG_DEPTHMAP_SCALE, F24(-1.0f));
+    GPUCMD_AddWrite(GPUREG_DEPTHMAP_OFFSET, 0);
+    GPUCMD_AddWrite(GPUREG_EARLYDEPTH_TEST1, 0);
+    GPUCMD_AddWrite(GPUREG_EARLYDEPTH_TEST2, 0);
+
+    // Fragment ops: no alpha/stencil/depth test, write RGBA, src-alpha blending, no fog/lighting.
+    GPUCMD_AddWrite(GPUREG_FRAGOP_ALPHA_TEST, 0);
+    GPUCMD_AddWrite(GPUREG_STENCIL_TEST, 0);
+    GPUCMD_AddWrite(GPUREG_DEPTH_COLOR_MASK, 0x0F10);
+    GPUCMD_AddWrite(GPUREG_COLOR_OPERATION, 0x00E40100);
+    GPUCMD_AddWrite(GPUREG_BLEND_FUNC, 0x71760000); // rgb: SA, 1-SA; alpha: 1, 1-SA
+    GPUCMD_AddWrite(GPUREG_TEXENV_UPDATE_BUFFER, 0);
+    GPUCMD_AddWrite(GPUREG_LIGHTING_ENABLE0, 0);
+
+    // Texture unit 0: the overlay, nearest filtering (crisp, like the game's own 2D).
+    u32 unit[5] = {0, (u32)TEX_W << 16 | TEX_H, 0, 0, osConvertVirtToPhys(tex) >> 3};
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXUNIT0_BORDER_COLOR, unit, 5);
+    GPUCMD_AddWrite(GPUREG_TEXUNIT0_TYPE, GPU_RGBA4);
+    GPUCMD_AddWrite(GPUREG_TEXUNIT_CONFIG, 0x00011001);
+
+    // TexEnv: stage 0 = texture 0, stages 1-5 pass it on.
+    u32 env0[5] = {0x00030003, 0, 0, 0, 0};
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXENV0_SOURCE, env0, 5);
+    u32 envN[5] = {0x000F000F, 0, 0, 0, 0};
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXENV1_SOURCE, envN, 5);
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXENV2_SOURCE, envN, 5);
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXENV3_SOURCE, envN, 5);
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXENV4_SOURCE, envN, 5);
+    GPUCMD_AddIncrementalWrites(GPUREG_TEXENV5_SOURCE, envN, 5);
+
+    // Shader and two float4 inputs (position, texcoord), sent as immediate-mode vertices.
+    shaderProgramUse(&s_prog);
+    u32 fmt[2] = {0xFF, 0x10000000};
+    GPUCMD_AddIncrementalWrites(GPUREG_ATTRIBBUFFERS_FORMAT_LOW, fmt, 2);
+    GPUCMD_AddMaskedWrite(GPUREG_VSH_INPUTBUFFER_CONFIG, 0xB, 0xA0000001);
+    GPUCMD_AddWrite(GPUREG_VSH_NUM_ATTR, 1);
+    u32 perm[2] = {0x10, 0};
+    GPUCMD_AddIncrementalWrites(GPUREG_VSH_ATTRIBUTES_PERMUTATION_LOW, perm, 2);
+
+    GPUCMD_AddMaskedWrite(GPUREG_PRIMITIVE_CONFIG, 2, GPU_TRIANGLE_STRIP);
+    GPUCMD_AddWrite(GPUREG_RESTART_PRIMITIVE, 1);
+    GPUCMD_AddWrite(GPUREG_INDEXBUFFER_CONFIG, 0x80000000);
+    GPUCMD_AddMaskedWrite(GPUREG_GEOSTAGE_CONFIG2, 1, 1);
+    GPUCMD_AddMaskedWrite(GPUREG_START_DRAW_FUNC0, 1, 0);
+    GPUCMD_AddWrite(GPUREG_FIXEDATTRIB_INDEX, 0xF);
+
+    // One quad over the visible part (see RT_BUFFERS): screen (X, Y) is buffer (240 - Y, W - X).
+    const float sw = (float)screenW;
+    auto cx = [&](float bx) { return bx / w * 2.0f - 1.0f; };
+    auto cy = [&](float by) { return by / h * 2.0f - 1.0f; };
+    const float u1 = sw / TEX_W, v1 = (float)SCREEN_H / TEX_H;
+    Vertex(cx(SCREEN_H), cy(sw), 0, 0);  // screen top left
+    Vertex(cx(SCREEN_H), cy(0), u1, 0);  // top right
+    Vertex(cx(0), cy(sw), 0, v1);        // bottom left
+    Vertex(cx(0), cy(0), u1, v1);        // bottom right
+
+    GPUCMD_AddMaskedWrite(GPUREG_START_DRAW_FUNC0, 1, 1);
+    GPUCMD_AddMaskedWrite(GPUREG_GEOSTAGE_CONFIG2, 1, 0);
+    GPUCMD_AddWrite(GPUREG_VTX_FUNC, 1);
+
+    u32* buf;
+    u32 size, offset;
+    GPUCMD_GetBuffer(&buf, &size, &offset);
+    *reinterpret_cast<u32**>(CMD_PTR) = ptr + offset;
+    reinterpret_cast<void (*)()>(FN_SPLIT)();
+}
+
+void TransferHook(u32 display, u32 rt) {
+    u32 id = *reinterpret_cast<u32*>(display + DISPLAY_ID);
+    if (rt && id <= 2 && Setup()) {
+        Layer& l = s_layers[id == 1 ? 1 : 0];
+        if (id != 2) l.transfers++;
+        int f = l.front;
+        if (s_enabled && f >= 0 && l.buf[f].used) EmitOverlay(rt, l.buf[f].tex, l.width);
+    }
+    HookContext::GetCurrent().OriginalFunction<void>(display, rt);
+}
+
+} // namespace
+
+bool InstallGpuOverlay() {
+    s_hook.InitializeForMitm(FN_TRANSFER, (u32)TransferHook);
+    return s_hook.Enable() == HookResult::Success;
+}
+
+bool GpuBegin(int screen) {
+    Layer& l = s_layers[screen];
+    l.drawing = false;
+    if (!s_ready || !s_enabled) { l.front = -1; return false; }
+    // The game must be showing this screen through the hooked copy right now.
+    u32 t = l.transfers;
+    l.missed = t == l.seen ? l.missed + 1 : 0;
+    l.seen = t;
+    if (l.missed >= STALE_CALLS) { l.front = -1; return false; }
+    Clear(l.buf[l.back]);
+    l.drawing = true;
+    return true;
+}
+
+void GpuRect(int screen, int x, int y, int w, int h, u32 rgba, bool fill) {
+    Layer& l = s_layers[screen];
+    if (!l.drawing) return;
+    if (fill) { Fill(l, x, y, w, h, rgba); return; }
+    Fill(l, x, y, w, 1, rgba);
+    if (h > 1) Fill(l, x, y + h - 1, w, 1, rgba);
+    Fill(l, x, y + 1, 1, h - 2, rgba);
+    if (w > 1) Fill(l, x + w - 1, y + 1, 1, h - 2, rgba);
+}
+
+void GpuText(int screen, const char* s, int x, int y, u32 rgba) {
+    Layer& l = s_layers[screen];
+    if (!l.drawing || !(rgba & 0xFF)) return;
+    u32 r = rgba >> 24, g = rgba >> 16 & 0xFF, b = rgba >> 8 & 0xFF, a = rgba & 0xFF;
+    Buffer& buf = l.buf[l.back];
+    int x0 = x;
+    for (; *s; s++, x += 6) {
+        u8 c = (u8)*s;
+        const u8* glyph = kFont[(c >= 0x20 && c < 0x7F ? c : '?') - 0x20];
+        for (int row = 0; row < 10; row++) {
+            int py = y + row;
+            if (py < 0 || py >= SCREEN_H || !glyph[row]) continue;
+            for (int col = 0; col < 6; col++) {
+                int px = x + col;
+                if ((glyph[row] & (0x80 >> col)) && px >= 0 && px < l.width) Blend(buf.tex[TexelIndex(px, py)], r, g, b, a);
+            }
+        }
+    }
+    int w = x - x0, h = 10, cx = x0, cy = y;
+    if (Clip(l, cx, cy, w, h)) MarkDirty(buf, cx, cy, w, h);
+}
+
+void GpuEnd(int screen) {
+    Layer& l = s_layers[screen];
+    if (!l.drawing) return;
+    l.drawing = false;
+    Buffer& b = l.buf[l.back];
+    if (b.used) svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)b.tex, TEX_BYTES);
+    l.front = l.back;
+    l.back ^= 1;
+}
+
+void SetGpuOverlay(bool on) { s_enabled = on; }
+bool GpuOverlayEnabled() { return s_enabled; }
+
+} // namespace game

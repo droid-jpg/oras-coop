@@ -9,6 +9,7 @@ Reverse-engineering notes live in `E:\ORAS-RE\NOTES.md` (addresses, structs, fun
 |---|---|
 | Relay server (`server/server.mjs`) | ✅ rooms, IDs stamped server-side, STATE/CHAT/JOIN/LEAVE/BATTLE/TRADE, timeouts |
 | Plugin connects, status HUD, chat, player list, radar | ✅ tested in Azahar |
+| Overlay keeps Azahar's upscaling | ✅ the overlay is drawn by the 3DS GPU inside the game's frame (Gpu.cpp), both screens, so the game stays at Azahar's internal resolution (CTRPF's CPU drawing dropped it to native). Display → Sharp overlay (GPU) switches back to CPU drawing. Tested: title, intro, field, wild battles, X menu, map changes, notices/labels/arrows with a fake friend. Right eye (3D on) not tested |
 | `/who` | ✅ "/who" in Send chat (typed, or the last preset) isn't sent: it lists who's online and where as notices ("3 online in HOENN: you and 2 friends", then "Bot: here", "Ann: Granite Cave (busy)"...) |
 | Name labels / off-screen arrows | ✅ projected through the game's own camera — sit right above heads, indoors and out |
 | Finding the player | ✅ player state object 0x08C6E880 (stable), incremental fallback scans (no frame hitches) |

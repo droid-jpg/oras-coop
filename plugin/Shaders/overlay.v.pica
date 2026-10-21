@@ -1,0 +1,10 @@
+; Overlay vertex shader: the position comes in already in clip space, the texture
+; coordinate is passed through. Assembled with picasso; Gpu.cpp embeds the result.
+.out outpos position
+.out outtc0 texcoord0
+
+.proc main
+	mov outpos, v0
+	mov outtc0, v1
+	end
+.end

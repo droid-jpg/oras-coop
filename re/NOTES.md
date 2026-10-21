@@ -502,3 +502,43 @@ Object base observed at `0x08C6E880` (heap). Same addresses SamuTecYT/ORAS-MMO h
   (`Battle.cpp`'s side table) is display-only: writing HP there doesn't change the battle.
 - The talk script with a menu is ~650 AMX words: Talk.cpp's buffer was 480, and a failed build
   fell back to script id 0 (the old hang). Buffer raised; a failed build now shows "..." instead.
+
+## GPU: how a frame reaches the screen (2026-10-20)
+
+Why: CTRPF's OSD writes the overlay into the screen with the CPU. Azahar keeps an upscaled copy of
+the frame on the host GPU; a CPU write into that memory makes it fall back to the guest-memory
+copy (native 400x240), so every frame with the overlay on it lost the resolution scaling (menus,
+where the overlay hides, stayed sharp). Fix: draw the overlay with the 3DS GPU inside the frame.
+
+- **GSP submit**: `FUN_0017A598` = GSPGPU TriggerCmdReqQueue (IPC 0x000C0000); `FUN_0017404C(queue,
+  cmd[8])` pushes a GX command into the shared-memory queue. Request builders: `FUN_00164810`
+  type 0 (DMA), `FUN_00164890` 2 (memory fill), `FUN_00164900` 5+1 (flush + run command list),
+  `FUN_00164CA8` 3 (display transfer), `FUN_001649D0` 4 (texture copy).
+- **nngx**: global at **0x0066E008** (+0x9C current command list, +0xA0 the one running). Request
+  runner `FUN_0015D930` walks the list's 0x1C-byte requests (cmdlist +0x18 array, +0x20 count,
+  +0x24 next). Command list +4 buffer base, +0xC used bytes, +0x14 last split offset.
+- **Command buffer write pointer: global 0x0061E0BC**, end 0x0061E0C0 (raw PICA commands, 8-byte
+  aligned). **`FUN_0014298C` = nngxSplitDrawCmdlist**: appends 0x111=1, 0x110=1, 0x10=0x12345678 and
+  records a type-1 request for everything since the last split.
+- Transfer request (nngxTransferRenderImage): `FUN_00142500` -> `FUN_0015D5B8(cmdlist, src, srcW,
+  srcH, srcFmt, dst, dstW, dstH, dstFmt, aa, ?, block)`.
+- **Per screen: `FUN_00129F4C(display, renderTarget)`** (called from `FUN_0011CF38` after a split and
+  an optional capture `FUN_00129A4C`) binds the display, queues the transfer, then splits. Display
+  descriptors (0x2C bytes, two per screen, double-buffered): +8 screen (0 top, 1 bottom, 2 top
+  right eye), +0xC/+0x10 400(320)x240, +0x14 AA mode (0 = none here), +0x1C 0x8051 (RGB8).
+  Seen: 0x08C43020/4C top, 0x08C43078/A4 bottom; render targets 0x08C43198 (top), 0x08C431D8.
+- Render target size: `FUN_0016B620` (width) / `FUN_0016B5D0` (height); colour buffer = +0x14 of the
+  descriptor returned by virtual +0x10 of the buffer object at rt+0x1C (the two screens' buffer
+  objects are different classes with different field offsets). Both screens render into the same
+  **256x512 RGBA8 buffer at VRAM 0x1F070800** (depth 0x1F419800), copied to 0x1F300000 (top) /
+  0x1F000000 (bottom) with srcW=256, srcH=512, starting 112 rows in.
+- Mapping (test pattern): a screen of width W shows buffer x 0..240, y 0..W with screen x = W -
+  buffer y, screen y = 240 - buffer x. Textures are read bottom-up (t = 0 is the last row).
+- nngx allocator callbacks at 0x00616D84: alloc `0x0012A1B0(area, aim, id, size)` (0x10000 FCRAM;
+  aim 0x101 texture = 128-aligned), free 0x0012A1D8. **Scene memory**: a texture allocated during
+  the intro was reused by the title screen. The plugin takes its own linear memory instead
+  (svcControlMemory MEMOP_ALLOC_LINEAR, 4 x 256 KB, works at 0x16Bxxxxx).
+- Injecting a draw (shader upload, framebuffer, viewport, blend, texenv, immediate-mode quad)
+  between the last split and the transfer caused no visible corruption of the game's following
+  frames (title, intro cutscene, field, battles, X menu, map changes): the game sets its state
+  again each frame.

@@ -263,4 +263,17 @@ constexpr u16 TRAINER_BRENDAN = 699, TRAINER_MAY = 906;
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);
 
+// ---- GPU overlay (Gpu.cpp) ----
+// Hooks each screen's copy to the display (FUN_00129F4C) and composites an overlay texture there
+// with the GPU, so Azahar keeps the frame upscaled. Screen 0 = top (both eyes), 1 = bottom.
+// Per frame: GpuBegin(screen) (false: the GPU path isn't usable now, draw with the CPU instead),
+// then GpuRect/GpuText in screen pixels with 0xRRGGBBAA colours, then GpuEnd(screen).
+bool InstallGpuOverlay();
+bool GpuBegin(int screen);
+void GpuRect(int screen, int x, int y, int w, int h, u32 rgba, bool fill);
+void GpuText(int screen, const char* text, int x, int y, u32 rgba);
+void GpuEnd(int screen);
+void SetGpuOverlay(bool on);
+bool GpuOverlayEnabled();
+
 } // namespace game

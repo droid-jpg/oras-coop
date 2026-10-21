@@ -155,6 +155,12 @@ void MenuToggleOverlay(MenuEntry*) {
     OSD::Notify(on ? "Overlay on" : "Overlay off");
 }
 
+void MenuToggleGpu(MenuEntry*) {
+    bool on = !game::GpuOverlayEnabled();
+    game::SetGpuOverlay(on);
+    OSD::Notify(on ? "Sharp overlay on (GPU)" : "Sharp overlay off (CPU drawing)");
+}
+
 void MenuTogglePuppets(MenuEntry*) {
     g_session.lock.Lock();
     bool on = g_session.cfg.puppets;
@@ -268,6 +274,8 @@ int main() {
     MenuFolder* display = new MenuFolder("Display");
     *display += new MenuEntry("Show / hide overlay", nullptr, MenuToggleOverlay);
     *display += new MenuEntry("Marker scale", nullptr, MenuScale);
+    *display += new MenuEntry("Sharp overlay (GPU)", nullptr, MenuToggleGpu,
+                              "Draws the overlay with the GPU so Azahar's resolution scaling\nstays on. Off: drawn into the screen (native resolution).");
     *display += new MenuEntry("Real models (experimental)", nullptr, MenuTogglePuppets);
     *display += new MenuEntry("Debug: spawn test character", nullptr, MenuSpawnTest);
     *display += new MenuEntry("Debug: action on test character", nullptr, MenuActionTest);
@@ -279,6 +287,8 @@ int main() {
     game::InstallTalkHooks(coop::FriendTalk, coop::FriendDialogResult);
     // Battling a friend's team puts it in as the opponent's party (FriendBattle.cpp).
     game::InstallFriendBattleHook();
+    // Overlay drawn with the GPU inside the game's frame (keeps Azahar's upscaling); Gpu.cpp.
+    game::InstallGpuOverlay();
 
     OSD::Run(coop::OverlayCallback);
 

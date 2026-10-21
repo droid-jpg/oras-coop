@@ -22,7 +22,7 @@ constexpr u64 STALE_MS = 5000;
 constexpr u64 NOTICE_MS = 3500;       // each notice stays this long (paused while the game's UI is up)
 constexpr u64 BATTLE_FRESH_MS = 6000; // a friend's battle info is shown while this recent
 
-const Color kBg(8, 14, 24, 170);
+const Color kBg(8, 14, 24, 230); // mostly opaque: CTRPF drew it solid, and text over the map needs it
 const Color kAccent(0, 210, 255, 220);
 const Color kOk(0, 230, 120, 230);
 const Color kBad(230, 60, 60, 230);
@@ -33,21 +33,33 @@ const Color kPlayerColors[MAX_ID + 1] = {
     Color(220, 120, 255), Color(255, 150, 60), Color(90, 230, 220), Color(255, 130, 200),
 };
 
+// Where the overlay draws: a texture the GPU puts over the game's frame (Gpu.cpp; keeps Azahar's
+// upscaling), or straight into the screen with CTRPF when that isn't available.
+struct Canvas {
+    const Screen& screen;
+    bool IsTop;
+    bool gpu;
+};
+
+u32 Rgba(const Color& c) { return (u32)c.r << 24 | (u32)c.g << 16 | (u32)c.b << 8 | c.a; }
+
 // Clipped rectangle so nothing is ever drawn outside the framebuffer.
-void Rect(const Screen& s, int x, int y, int w, int h, const Color& c, bool fill = true) {
+void Rect(const Canvas& s, int x, int y, int w, int h, const Color& c, bool fill = true) {
     int maxW = s.IsTop ? TOP_W : BOT_W, maxH = s.IsTop ? TOP_H : BOT_H;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > maxW) w = maxW - x;
     if (y + h > maxH) h = maxH - y;
     if (w <= 0 || h <= 0) return;
-    s.DrawRect(x, y, w, h, c, fill);
+    if (s.gpu) game::GpuRect(s.IsTop ? 0 : 1, x, y, w, h, Rgba(c), fill);
+    else s.screen.DrawRect(x, y, w, h, c, fill);
 }
 
-void Text(const Screen& s, const std::string& t, int x, int y, const Color& c) {
+void Text(const Canvas& s, const std::string& t, int x, int y, const Color& c) {
     int maxW = s.IsTop ? TOP_W : BOT_W, maxH = s.IsTop ? TOP_H : BOT_H;
     if (x < 0 || y < 0 || y + 10 > maxH || x >= maxW) return;
-    s.Draw(t, x, y, c, kClear);
+    if (s.gpu) game::GpuText(s.IsTop ? 0 : 1, t.c_str(), x, y, Rgba(c));
+    else s.screen.Draw(t, x, y, c, kClear);
 }
 
 int TextWidth(const std::string& t) { return (int)t.size() * 6; }
@@ -536,7 +548,7 @@ void Wrap(const std::string& t, size_t maxChars, std::string& l1, std::string& l
 
 // The game's text box: white panel with a slate border near the bottom of the top screen, the
 // speaker's name in a tab above it, text typed out, and a blinking red arrow once it's all shown.
-void DrawTalkBox(const Screen& s, const Talk& t, const Color& accent) {
+void DrawTalkBox(const Canvas& s, const Talk& t, const Color& accent) {
     constexpr int X = 12, Y = 180, W = 376, H = 52;
     const Color border(84, 92, 110), panel(250, 250, 250), line(206, 214, 228), ink(56, 56, 64);
     u64 elapsed = osGetTime() - t.start;
@@ -711,7 +723,7 @@ int WarpToward(u16 from, u16 target) {
     return -1;
 }
 
-void DrawWarpLabels(const Screen& s, const View& v) {
+void DrawWarpLabels(const Canvas& s, const View& v) {
     if (!v.me.valid || !v.me.inField) return;
     u64 now = osGetTime();
     // Friends grouped by the door that leads to them.
@@ -784,7 +796,7 @@ void ListWho(const View& v) {
     g_session.lock.Unlock();
 }
 
-void DrawNotes(const Screen& s, const View& v) {
+void DrawNotes(const Canvas& s, const View& v) {
     u64 now = osGetTime();
     for (int id = 1; id <= MAX_ID; id++) {
         const Note& n = g_notes[id];
@@ -796,7 +808,7 @@ void DrawNotes(const Screen& s, const View& v) {
         int lw = TextWidth(n.text) + 6;
         int x = (int)Clampf(fx - lw / 2.0f, 2, (float)(TOP_W - lw - 2)), y = (int)fy - 14 - rise;
         const Color& c = kPlayerColors[id];
-        Rect(s, x, y, lw, 12, Color(8, 14, 24, (u8)(170 * fade)));
+        Rect(s, x, y, lw, 12, Color(8, 14, 24, (u8)(230 * fade)));
         Text(s, n.text, x + 3, y + 1, Color(c.r, c.g, c.b, (u8)(255 * fade)));
     }
 }
@@ -828,7 +840,7 @@ std::string ExpandNotice(const char* t) {
     return out;
 }
 
-void DrawNotice(const Screen& s, const View& v, bool visible) {
+void DrawNotice(const Canvas& s, const View& v, bool visible) {
     u64 now = osGetTime();
     u64 dt = g_noticeLast ? now - g_noticeLast : 0;
     g_noticeLast = now;
@@ -898,7 +910,7 @@ void FinishTrade(const View& v) {
 // ---- Watching a friend's battle ----
 // While the game's text box shows what's out in a friend's battle, the bottom screen lists both
 // sides with HP bars, updating live.
-void DrawBattlePanel(const Screen& s, const Remote& r) {
+void DrawBattlePanel(const Canvas& s, const Remote& r) {
     const Color ink(235, 235, 240), dim(150, 150, 160);
     Rect(s, 0, 0, BOT_W, BOT_H, Color(8, 14, 24, 235));
     Text(s, std::string(r.name) + "'s battle", 8, 4, kAccent);
@@ -926,7 +938,7 @@ void DrawBattlePanel(const Screen& s, const Remote& r) {
     }
 }
 
-void DrawStatus(const Screen& s, const View& v) {
+void DrawStatus(const Canvas& s, const View& v) {
     bool ok = v.status == NetStatus::Connected;
     std::string line = ok ? ("oras-mmo  " + v.room + "  #" + std::to_string(v.myId)) : v.statusText;
     int w = TextWidth(line) + 10;
@@ -935,7 +947,7 @@ void DrawStatus(const Screen& s, const View& v) {
     Text(s, line, 8, 3, ok ? kOk : kBad);
 }
 
-void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
+void DrawMarker(const Canvas& s, int id, const Remote& r, const View& v) {
     // Feet and head through the game's camera; the flat scale is only a fallback.
     float fx, fy, hx, hy;
     int sx, sy, labelY;
@@ -985,7 +997,7 @@ void DrawMarker(const Screen& s, int id, const Remote& r, const View& v) {
     }
 }
 
-void DrawTop(const Screen& s) {
+void DrawTop(const Canvas& s) {
     g_view = Snapshot();
     const View& v = g_view;
     UpdateTalk(v);
@@ -1011,7 +1023,7 @@ void DrawTop(const Screen& s) {
     if (g_talk.open && !g_talk.native) DrawTalkBox(s, g_talk, kPlayerColors[g_talk.id]);
 }
 
-void DrawBottom(const Screen& s) {
+void DrawBottom(const Canvas& s) {
     const View& v = g_view; // filled by the top-screen pass this frame
     if (g_talk.open && g_talk.id >= 1 && g_talk.id <= MAX_ID && InBattle(v.remotes[g_talk.id])) {
         DrawBattlePanel(s, v.remotes[g_talk.id]);
@@ -1088,9 +1100,12 @@ void FriendDialogResult(game::DialogResult what, int value, char* reply, int len
 }
 
 bool OverlayCallback(const Screen& screen) {
-    if (screen.IsTop) DrawTop(screen);
-    else DrawBottom(screen);
-    return true;
+    int id = screen.IsTop ? 0 : 1;
+    Canvas c{screen, screen.IsTop, game::GpuBegin(id)};
+    if (screen.IsTop) DrawTop(c);
+    else DrawBottom(c);
+    game::GpuEnd(id);
+    return !c.gpu; // nothing written into the screen itself
 }
 
 } // namespace coop
