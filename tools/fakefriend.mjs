@@ -11,6 +11,9 @@
 // sets the STATE "no warp" bit (as if it flew) so friends don't learn that as a door.
 // --party <file> answers party requests (T_PARTY, for battling us) with the party in <file>
 // (1..6 Pokemon of 0x104 bytes: encrypted data + party stats, e.g. from tools/dumpparty.mjs).
+// --z <height>: without it the bot takes the height of the first real player it hears on its map
+// (2 until then). A wrong height puts it in the air or underground (cave floors are far below 0),
+// so friends see an off-screen arrow instead of its name.
 import net from 'node:net';
 
 const args = Object.fromEntries(
@@ -22,7 +25,7 @@ const args = Object.fromEntries(
 const opt = {
   server: args.server ?? '127.0.0.1', port: Number(args.port ?? 7777), room: args.room ?? 'HOENN',
   name: args.name ?? 'Bot', map: Number(args.map ?? 6), x: Number(args.x ?? 1881), y: Number(args.y ?? 3141),
-  radius: Number(args.radius ?? 54), listen: !!args.listen, z: Number(args.z ?? 2), // --z height (cave floors are far below 0)
+  radius: Number(args.radius ?? 54), listen: !!args.listen, z: Number(args.z ?? 2), autoZ: args.z === undefined,
   speed: Number(args.speed ?? 0.05), anim: Number(args.anim ?? 0x10), stopgo: !!args.stopgo,
   model: Number(args.model ?? 0xab), // player model sent to others: 0xAB May, 0xAC Brendan
   // --x2/--y2 --after N: move the circle centre to (x2,y2) after N seconds (tests moved collision)
@@ -57,6 +60,11 @@ sock.on('data', (d) => {
       case T.JOIN: names[id] = cstr(f, 4, 16); console.log(`join #${id} ${names[id]}`); break;
       case T.LEAVE: console.log(`leave #${id} ${names[id] ?? ''}`); break;
       case T.STATE:
+        if (opt.autoZ && id !== myId && f.readUInt16LE(4) === opt.map) {
+          opt.z = f.readFloatLE(12);
+          opt.autoZ = false;
+          console.log(`height ${opt.z.toFixed(1)} (from #${id} ${names[id] ?? ''})`);
+        }
         if (opt.listen) console.log(`state #${id} ${names[id] ?? ''} map=${f.readUInt16LE(4)} facing=${f.readUInt16LE(6)} x=${f.readFloatLE(8).toFixed(2)} y=${f.readFloatLE(16).toFixed(2)} z=${f.readFloatLE(12).toFixed(2)} st=${f[37]} anim=0x${f[36].toString(16)} model=0x${f.readUInt16LE(38).toString(16)} t=${f.readUInt32LE(40)}`);
         break;
       case T.CHAT: console.log(`chat #${id} ${names[id] ?? ''}: ${cstr(f, 4, 40)}`); break;
