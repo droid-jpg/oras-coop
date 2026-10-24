@@ -11,6 +11,7 @@
 // sets the STATE "no warp" bit (as if it flew) so friends don't learn that as a door.
 // --party <file> answers party requests (T_PARTY, for battling us) with the party in <file>
 // (1..6 Pokemon of 0x104 bytes: encrypted data + party stats, e.g. from tools/dumpparty.mjs).
+// --live / --live-challenge <id>: a live battle with --party (see the end of this file).
 // --z <height>: without it the bot takes the height of the first real player it hears on its map
 // (2 until then). A wrong height puts it in the air or underground (cave floors are far below 0),
 // so friends see an off-screen arrow instead of its name.
@@ -77,6 +78,7 @@ sock.on('data', (d) => {
         if (f[4] === 1 && f[5] === myId) sendParty(id);
         break;
       case T.ERROR: console.log(`error code ${f[4]}`); break;
+      case 15: onLive(f, id); break; // T_LIVE (--live)
     }
   }
 });
@@ -190,3 +192,70 @@ function sendParty(to) {
 }
 let await_party = null;
 globalThis.fsMod = await import('node:fs');
+
+// --live: plays a live battle (T_LIVE) with --party <file>: accepts challenges (its whole party
+// goes back first, as PARTY_LIVE), and answers each step with its lead's move --move N (1..4,
+// default 1), or, after a knock-out that wasn't the partner's, its next party slot.
+// --live-challenge <id>: challenges player <id> a few seconds after joining.
+const T_LIVE = 15, LIVE = { CHALLENGE: 1, ACCEPT: 2, CANCEL: 3, ACTION: 4 }, PARTY_LIVE = 3;
+function pkMoves(pk) {
+  const d = Buffer.from(pk.subarray(0, 0xE8));
+  const ec = d.readUInt32LE(0);
+  let seed = ec;
+  for (let i = 8; i + 1 < 0xE8; i += 2) { seed = (Math.imul(seed, 0x41C64E6D) + 0x6073) >>> 0; d.writeUInt16LE(d.readUInt16LE(i) ^ (seed >>> 16), i); }
+  const order = ['ABCD','ABDC','ACBD','ACDB','ADBC','ADCB','BACD','BADC','BCAD','BCDA','BDAC','BDCA','CABD','CADB','CBAD','CBDA','CDAB','CDBA','DABC','DACB','DBAC','DBCA','DCAB','DCBA'][((ec >>> 13) & 31) % 24];
+  const b = 8 + order.indexOf('B') * 56;
+  return [0, 1, 2, 3].map((i) => d.readUInt16LE(b + 0x1A + i * 2));
+}
+function sendLiveParty(to) {
+  const data = args.party ? fsMod.readFileSync(args.party) : Buffer.alloc(0);
+  const count = Math.min(6, Math.floor(data.length / 0x104));
+  const frames = [];
+  for (let piece = 0; piece < Math.max(1, count * 7); piece++) {
+    const p = frame(T.PARTY); p[4] = PARTY_LIVE; p[5] = to; p[6] = piece; p[7] = count;
+    if (count) { const slot = Math.floor(piece / 7), off = (piece % 7) * 40; data.copy(p, 8, slot * 0x104 + off, slot * 0x104 + Math.min(off + 40, 0x104)); }
+    frames.push(p);
+  }
+  const moves = [...Array(count)].map((_, i) => pkMoves(data.subarray(i * 0x104, i * 0x104 + 0x104)));
+  return { frames, lead: moves[0] ?? [0, 0, 0, 0], moves, count };
+}
+const live = { partner: 0, step: 0, lead: [0, 0, 0, 0], moves: [], count: 0, next: 1 };
+function liveSend(to, op, seed = 0) { const f = frame(T_LIVE); f[4] = op; f[5] = to; f.writeUInt32LE(seed >>> 0, 8); sock.write(f); }
+function startLive(to, op, seed) {
+  const { frames, lead, moves, count } = sendLiveParty(to);
+  live.partner = to; live.step = 0; live.lead = lead; live.moves = moves; live.count = count; live.next = 1;
+  frames.forEach((p, i) => setTimeout(() => sock.write(p), Math.floor(i / 10) * 300));
+  setTimeout(() => { liveSend(to, op, seed); console.log(`live: ${op === LIVE.ACCEPT ? 'accepted' : 'challenged'} #${to}, lead moves ${lead.join(',')}`); }, Math.ceil(frames.length / 10) * 300 + 100);
+}
+function onLive(f, id) {
+  if (f[5] !== myId) return;
+  const op = f[4];
+  if (op === LIVE.CHALLENGE) {
+    console.log(`live: challenged by #${id}, seed ${f.readUInt32LE(8).toString(16)}`);
+    if (args.live) startLive(id, LIVE.ACCEPT, 0);
+  } else if (op === LIVE.ACCEPT) {
+    console.log(`live: #${id} accepted`);
+  } else if (op === LIVE.CANCEL) {
+    console.log(`live: #${id} cancelled`);
+  } else if (op === LIVE.ACTION) {
+    const step = f.readUInt16LE(6), cmd = f[8], count = f[9];
+    const words = [...Array(count)].map((_, i) => f.readUInt32LE(16 + i * 4).toString(16));
+    console.log(`live: #${id} step ${step} cmd ${cmd} [${words.join(' ')}] check ${f.readUInt32LE(12).toString(16)}`);
+    const a = frame(T_LIVE); a[4] = LIVE.ACTION; a[5] = id; a.writeUInt16LE(step, 6); a[8] = cmd;
+    // A move: kind 1, target 0xA (the game's own "the foe" in a single battle), move id << 8.
+    // Sending one in after a faint: kind 3, position 0 << 4, party slot << 7. If our partner's
+    // answer to the same step is "nothing" (word 0), the knocked-out Pokemon was ours.
+    let word = 0;
+    if (cmd === 3) word = (1 | (0xA << 4) | (live.lead[(Number(args.move ?? 1) - 1) & 3] << 8)) >>> 0;
+    else if ((cmd === 5 || cmd === 6) && count && f.readUInt32LE(16) === 0 && live.next < live.count) {
+      word = 3 | (live.next << 7);
+      live.lead = live.moves[live.next++];
+    }
+    a[9] = 1; a.writeUInt32LE(word, 16);
+    sock.write(a);
+    console.log(`live: answered step ${step} cmd ${cmd} with ${word.toString(16)}`);
+  }
+}
+if (args['live-challenge']) {
+  setTimeout(() => startLive(Number(args['live-challenge']), LIVE.CHALLENGE, (Math.random() * 2 ** 32) >>> 0), 3000);
+}

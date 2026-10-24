@@ -187,6 +187,7 @@ struct Dialog {
     int actionCount = 0;
     int battleAction = -1, tradeAction = -1;
     u16 battleTrainer = 0;
+    bool battleAfter = false;             // Message: once the box closes, the battle against battleTrainer
     bool evolve = false;                  // after the text: the evolution armed by ArmTradeEvolution
 };
 // Answer: the Yes/No result as the game stores it (non-zero = Yes). Slot: the party slot picked.
@@ -250,6 +251,10 @@ bool ReadBoxSlot(int slot, u8* out);         // PK_DATA bytes
 bool SpeciesOf(const u8* pk, u16& species, bool* egg = nullptr);
 // Sets a party Pokemon's (PK_SIZE bytes) current HP to its max and clears its status.
 void HealPokemon(u8* pk);
+// Clears its Pokemon-Amie affection (both trainers'), fixing the checksum. Battle copies only.
+void ClearAffection(u8* pk);
+// True if it is an egg (false if the data doesn't check out).
+bool IsEgg(const u8* pk);
 
 // ---- Trade evolutions (Evolve.cpp) ----
 // Hooks the game's app starter (FUN_003CFBA8) so a talk script with Dialog::evolve runs the
@@ -275,6 +280,42 @@ bool FriendBattleStarted();
 // Rival trainers to borrow (single battles, the game's strongest AI flags): they look like a
 // friend's own character. Trainer data a/0/3/6; see re/NOTES.md.
 constexpr u16 TRAINER_BRENDAN = 699, TRAINER_MAY = 906;
+// A live battle (LiveBattle.cpp): armed like ArmFriendBattle, plus, in the battle setup, our own
+// team and theirs healed and without Pokemon-Amie affection, no EXP, and the Set battle style.
+// `party` must be their whole party as their game has it (eggs included, in order).
+void ArmLiveFriendBattle(const u8* party, int count, const char* name);
+// Puts the battle style option back after a live battle (call once back on the field).
+void RestoreBattleStyle();
+
+// ---- Live battles (LiveBattle.cpp) ----
+// One step of a live battle: what a player answered to the battle's command `cmd` (3 action, 5/6
+// a Pokemon to send in): `count` action words (one per Pokemon out). check = HP checksum of the
+// battle when it was asked (0 = unknown), to notice games drifting apart.
+struct LiveAction {
+    u16 step = 0;
+    u8 cmd = 0, count = 0;
+    u32 check = 0;
+    u32 words[6] = {};
+};
+struct LiveStatus {
+    bool armed = false, patched = false, seeded = false, fellBack = false, desync = false;
+    u16 stepOurs = 0, stepTheirs = 0, lastCmd = 0;
+    u32 lastOurs = 0, lastTheirs = 0;
+};
+// Hooks the battle's RNG seeding (code.bin). Once, at start-up.
+bool InstallLiveBattleHook();
+// host: we challenged (our side sorts first in both games); seed: the battle RNG seed both use.
+void ArmLiveBattle(bool host, u32 seed);
+void DisarmLiveBattle();
+bool LiveBattleArmed();
+// Game thread, every frame: patches DllBattle while a live battle is armed and it is loaded.
+void UpdateLiveBattle();
+// The friend left: their side goes back to the game's AI.
+void LivePartnerGone();
+// Network thread: our answers to send, and the friend's as they arrive.
+bool LivePopOutgoing(LiveAction& out);
+void LivePushIncoming(const LiveAction& a);
+LiveStatus GetLiveStatus();
 
 // Converts the player-state facing value (0..7) to a unit vector.
 void FacingToDir(u16 facing, float& dirX, float& dirY);

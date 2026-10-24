@@ -83,6 +83,32 @@ bool SpeciesOf(const u8* pk, u16& species, bool* egg) {
     return species >= 1 && species <= 721;
 }
 
+bool IsEgg(const u8* pk) {
+    u16 species = 0;
+    bool egg = false;
+    return SpeciesOf(pk, species, &egg) && egg;
+}
+
+// Affection: the current trainer's at block C +0x2B (0xA3) and the original trainer's at block D
+// +0x1B (0xCB), as FUN_004D2D84 reads them for the battle.
+void ClearAffection(u8* pk) {
+    static const char ORDER[24][5] = {
+        "ABCD", "ABDC", "ACBD", "ACDB", "ADBC", "ADCB", "BACD", "BADC", "BCAD", "BCDA", "BDAC", "BDCA",
+        "CABD", "CADB", "CBAD", "CBDA", "CDAB", "CDBA", "DABC", "DACB", "DBAC", "DBCA", "DCAB", "DCBA",
+    };
+    u32 ec = pk[0] | pk[1] << 8 | pk[2] << 16 | (u32)pk[3] << 24;
+    if (!ec) return;
+    Crypt(pk, ec, 8, PK_DATA);
+    const char* order = ORDER[((ec >> 13) & 31) % 24];
+    pk[8 + (std::strchr(order, 'C') - order) * 56 + 0x2B] = 0;
+    pk[8 + (std::strchr(order, 'D') - order) * 56 + 0x1B] = 0;
+    u16 sum = 0;
+    for (int i = 8; i < PK_DATA; i += 2) sum += (u16)(pk[i] | pk[i + 1] << 8);
+    pk[6] = (u8)sum;
+    pk[7] = (u8)(sum >> 8);
+    Crypt(pk, ec, 8, PK_DATA);
+}
+
 void HealPokemon(u8* pk) {
     u32 ec = pk[0] | pk[1] << 8 | pk[2] << 16 | (u32)pk[3] << 24;
     u8* st = pk + PK_DATA; // party stats: status u32 @0, level @4, HP @8, max HP @0xA

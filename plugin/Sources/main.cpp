@@ -232,6 +232,13 @@ void MenuStatus(MenuEntry*) {
 
     char buf[384], models[160];
     game::DescribeWantedModels(models, sizeof models);
+    game::LiveStatus live = game::GetLiveStatus();
+    if (live.armed) {
+        net += Utils::Format("\nLive battle: step %u/%u cmd %u ours %08lX theirs %08lX%s%s%s%s", live.stepOurs,
+                             live.stepTheirs, live.lastCmd, (unsigned long)live.lastOurs, (unsigned long)live.lastTheirs,
+                             live.patched ? "" : " (not patched)", live.seeded ? "" : " (not seeded)",
+                             live.fellBack ? " AI" : "", live.desync ? " DESYNC" : "");
+    }
     if (s.valid) {
         snprintf(buf, sizeof buf, "Player object: %08lX\nMap %u  facing %u\nX %.2f  Y %.2f  height %.2f\nTile %d, %d\nModels: %s",
                  (unsigned long)game::ObjectAddress(), (unsigned)s.map, (unsigned)s.facing,
@@ -287,6 +294,8 @@ int main() {
     game::InstallTalkHooks(coop::FriendTalk, coop::FriendDialogResult);
     // Battling a friend's team puts it in as the opponent's party (FriendBattle.cpp).
     game::InstallFriendBattleHook();
+    // Live battles: the battle's RNG seed both games agree on (LiveBattle.cpp).
+    game::InstallLiveBattleHook();
     // A traded Pokemon that evolves by trade gets the game's evolution scene (Evolve.cpp).
     game::InstallEvolutionHook();
     // Overlay drawn with the GPU inside the game's frame (keeps Azahar's upscaling); Gpu.cpp.

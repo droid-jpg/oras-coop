@@ -23,6 +23,10 @@ trainers, in real time.
   own text box.
 - **Battle a friend's team.** Pick **Battle** and you fight their real party, under their name.
   Losing is fine: your party and money are put back afterwards.
+- **Live battles.** Pick **Live battle** and your friend gets the challenge in their game. Say Yes
+  and you battle each other for real: each of you picks your own moves, switches and items, and
+  both games play out the same battle. Both teams are healed first, there's no EXP, and your
+  party is put back afterwards. If a friend disconnects mid-battle, the game's AI takes over their side.
 - **Trade.** Pick **Trade**, choose a Pokémon, and your friend answers by talking to you.
   Pokémon that evolve by trading evolve when they arrive.
 - **Chat.** Press **SELECT** → *Send chat*. Type `/who` to see who's online and where.
@@ -65,7 +69,8 @@ Everyone who types the same room code ends up in the same world.
 - It's early. Expect rough edges, and back up your save before playing.
 - Trades are the mod's own, not the game's link trade, but trade evolutions work: a Haunter,
   Kadabra, Onix holding a Metal Coat and so on evolve with the game's own evolution scene.
-- Battles against a friend are fought by the game's AI using their team, not by them live.
+- **Battle** has the game's AI play your friend's team; **Live battle** has your friend play it.
+  Live battles are single battles and need both players (and the server) on this version.
 - Alpha Sapphire v1.4 only for now (no Omega Ruby, no real 3DS yet).
 
 Found a bug? [Open an issue](https://github.com/droid-jpg/oras-mmo/issues).

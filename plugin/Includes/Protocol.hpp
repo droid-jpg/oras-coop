@@ -18,11 +18,20 @@ enum : u8 {
     T_EVENT,  // something happened in the sender's game: kind u8 @4, value u8 @5, species u16 @6, from u16 @8
     T_PARTY,  // the sender's party for player target u8 @5: op u8 @4 (PARTY_REQUEST / PARTY_DATA);
               // DATA: piece u8 @6 = slot * PARTY_CHUNKS + chunk, count u8 @7, PARTY_CHUNK bytes @8
+    T_LIVE,   // a live battle with player target u8 @5: op u8 @4 (LIVE_*), see below
 };
 
 enum : u8 {
     PARTY_REQUEST = 1,  // send me your party (to battle it)
     PARTY_DATA = 2,     // one piece of it (count 0 = nothing to battle with)
+    PARTY_LIVE = 3,     // like DATA, but the whole party as the game has it (eggs too), for a live battle
+};
+
+enum : u8 {
+    LIVE_CHALLENGE = 1, // seed u32 @8 (the battle's RNG seed); the sender's PARTY_LIVE comes first
+    LIVE_ACCEPT = 2,    // the sender's PARTY_LIVE comes first
+    LIVE_CANCEL = 3,    // declined, called off, or given up
+    LIVE_ACTION = 4,    // step u16 @6, cmd u8 @8, count u8 @9, check u32 @12, count u32 action words @16
 };
 constexpr int PARTY_CHUNK = 40;
 constexpr int PARTY_CHUNKS = 7; // per Pokemon: game::PK_SIZE (0x104) bytes in 40-byte pieces

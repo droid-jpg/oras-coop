@@ -64,6 +64,11 @@ struct Remote {
     u8 partyCount = 0;
     u64 partyPieces = 0;          // bit per received piece (slot * PARTY_CHUNKS + chunk)
     bool partyComplete = false;
+    // Their whole party (PARTY_LIVE: eggs too, in order), sent with a live battle challenge/accept.
+    u8 liveParty[6][game::PK_SIZE];
+    u8 liveCount = 0;
+    u64 livePieces = 0;
+    bool liveComplete = false;
     u64 battleTime = 0;           // when it was last updated
     u64 lastUpdate = 0;
 };
@@ -94,6 +99,28 @@ struct Trade {
     bool pendingWrite = false;             // both accepted: the game thread writes at a safe moment
 };
 
+// A live battle (both players choose their own moves; LiveBattle.cpp). One at a time, one partner.
+// Host = the one who challenged: picks the seed, and its side sorts first in both games.
+enum class LiveState : u8 {
+    None,
+    Challenged,  // we challenged `partner`, waiting for an answer
+    Invited,     // `partner` challenged us: ask (once their party is in)
+    HostStart,   // they accepted: start our battle
+    GuestStart,  // we accepted: start our battle
+    Running,     // our battle is armed / on
+};
+struct Live {
+    LiveState state = LiveState::None;
+    u8 partner = 0;
+    bool host = false;
+    u32 seed = 0;
+    u64 since = 0;
+    u8 mine[6][game::PK_SIZE];     // our party as we sent it
+    int mineCount = 0;
+    bool sendParty = false, sendChallenge = false, sendAccept = false, sendCancel = false;
+    bool asked = false;            // Invited: the question is up
+};
+
 // Something that happened in our game, for friends' notices (T_EVENT): caught, evolved, badge.
 struct Event {
     u8 kind = 0, value = 0;
@@ -120,6 +147,7 @@ struct Session {
     Notice notices[MAX_NOTICES];     // queue, oldest first
     int noticeCount = 0;
     Trade trade;
+    Live live;
     // Our party as the game thread last read it (no eggs), for friends who ask for it.
     u8 localParty[6][game::PK_SIZE];
     int localPartyCount = 0;

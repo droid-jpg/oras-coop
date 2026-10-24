@@ -139,6 +139,8 @@ void ClearRemotes() {
     for (auto& r : g_session.remotes) r = Remote();
     g_session.myId = 0;
     g_session.trade = Trade(); // a trade never survives a reconnect
+    if (g_session.live.state == LiveState::Running) game::LivePartnerGone(); // the game thread ends it
+    else g_session.live = Live();
 }
 
 bool SameBattle(const game::BattleState& a, const game::BattleState& b) {
@@ -200,9 +202,22 @@ void ApplyParty(const Frame& f, u8 id) {
     Remote& r = g_session.remotes[id];
     u8 op = f.get<u8>(4);
     if (op == PARTY_REQUEST) { g_session.partyWanted |= (u16)(1 << id); return; }
-    if (op != PARTY_DATA) return;
     u8 piece = f.get<u8>(6), count = f.get<u8>(7);
     if (count > 6) return;
+    if (op == PARTY_LIVE) {
+        if (count != r.liveCount || piece == 0) { r.liveCount = count; r.livePieces = 0; r.liveComplete = false; }
+        int slot = piece / PARTY_CHUNKS, chunk = piece % PARTY_CHUNKS;
+        if (count && slot < count) {
+            int off = chunk * PARTY_CHUNK;
+            int len = game::PK_SIZE - off < PARTY_CHUNK ? game::PK_SIZE - off : PARTY_CHUNK;
+            if (len > 0) std::memcpy(r.liveParty[slot] + off, f.b + 8, len);
+            r.livePieces |= 1ULL << piece;
+        }
+        u64 all = count ? (1ULL << (count * PARTY_CHUNKS)) - 1 : 0;
+        r.liveComplete = count && (r.livePieces & all) == all;
+        return;
+    }
+    if (op != PARTY_DATA) return;
     if (count != r.partyCount) { r.partyCount = count; r.partyPieces = 0; r.partyComplete = false; }
     int slot = piece / PARTY_CHUNKS, chunk = piece % PARTY_CHUNKS;
     if (count && slot < count) {
@@ -253,6 +268,41 @@ void ApplyTrade(const Frame& f, u8 id) {
     }
 }
 
+// A live battle step from player `id` addressed to us (lock held).
+void ApplyLive(const Frame& f, u8 id) {
+    Live& l = g_session.live;
+    std::string name = g_session.remotes[id].name;
+    u8 op = f.get<u8>(4);
+    if (op == LIVE_CHALLENGE) {
+        if (l.state != LiveState::None || g_session.trade.partner) return; // busy: they'll give up waiting
+        l = Live();
+        l.state = LiveState::Invited;
+        l.partner = id;
+        l.seed = f.get<u32>(8);
+        l.since = osGetTime();
+        PushNotice(name + " challenges you to a live battle!", id);
+        return;
+    }
+    if (l.partner != id) return;
+    if (op == LIVE_ACCEPT && l.state == LiveState::Challenged) {
+        l.state = LiveState::HostStart;
+        l.since = osGetTime();
+    } else if (op == LIVE_CANCEL) {
+        if (l.state == LiveState::Running) { game::LivePartnerGone(); return; }
+        if (l.state == LiveState::Challenged) PushNotice(name + " can't battle right now.", id);
+        else if (l.state != LiveState::None) PushNotice(name + " called off the live battle.", id);
+        l = Live();
+    } else if (op == LIVE_ACTION && l.state == LiveState::Running) {
+        game::LiveAction a;
+        a.step = f.get<u16>(6);
+        a.cmd = f.get<u8>(8);
+        a.count = f.get<u8>(9) <= 6 ? f.get<u8>(9) : 6;
+        a.check = f.get<u32>(12);
+        for (int i = 0; i < a.count; i++) a.words[i] = f.get<u32>(16 + i * 4);
+        game::LivePushIncoming(a);
+    }
+}
+
 void Apply(const Frame& f) {
     u8 id = f.player();
     Guard g(g_session.lock);
@@ -281,6 +331,10 @@ void Apply(const Frame& f) {
             if (g_session.trade.partner == id) {
                 g_session.trade = Trade();
                 PushNotice("The trade was cancelled.");
+            }
+            if (g_session.live.partner == id) {
+                if (g_session.live.state == LiveState::Running) game::LivePartnerGone();
+                else g_session.live = Live();
             }
             r = Remote();
         }
@@ -386,6 +440,9 @@ void Apply(const Frame& f) {
     case T_EVENT:
         if (id >= 1 && id <= MAX_ID && g_session.remotes[id].active) ApplyEvent(f, id);
         break;
+    case T_LIVE:
+        if (id >= 1 && id <= MAX_ID && f.get<u8>(5) == g_session.myId) ApplyLive(f, id);
+        break;
     case T_ERROR: {
         u8 code = f.get<u8>(4);
         g_session.status = NetStatus::Failed;
@@ -449,6 +506,11 @@ void RunSession(const Config& cfg) {
     static u8 outParty[6][game::PK_SIZE];
     int outCount = 0, outPiece = -1;
     u16 outTo = 0;
+    // A live battle: our whole party to the partner (then the challenge or accept), and our answers.
+    static u8 liveParty[6][game::PK_SIZE];
+    int liveCount = 0, livePiece = -1;
+    u8 liveTo = 0, liveThen = 0;  // LIVE_CHALLENGE / LIVE_ACCEPT once the party is out
+    u32 liveSeed = 0;
 
     while (g_session.running) {
         std::string chat, greeting;
@@ -461,6 +523,7 @@ void RunSession(const Config& cfg) {
         Event events[MAX_EVENTS];
         int eventCount = 0;
         u16 partyAsk = 0;
+        u8 liveCancelTo = 0, liveAt = 0;
         {
             Guard g(g_session.lock);
             if (g_session.reconnect) break; // NetThread clears it and reconnects immediately
@@ -491,6 +554,24 @@ void RunSession(const Config& cfg) {
             eventCount = g_session.eventCount;
             for (int i = 0; i < eventCount; i++) events[i] = g_session.events[i];
             g_session.eventCount = 0;
+            Live& l = g_session.live;
+            if (l.sendCancel) {
+                l.sendCancel = false;
+                liveCancelTo = l.partner;
+                livePiece = -1;
+                liveThen = 0;
+            }
+            if (l.sendParty) {
+                l.sendParty = false;
+                std::memcpy(liveParty, l.mine, sizeof liveParty);
+                liveCount = l.mineCount;
+                livePiece = 0;
+                liveTo = l.partner;
+                liveSeed = l.seed;
+                liveThen = l.sendChallenge ? LIVE_CHALLENGE : l.sendAccept ? LIVE_ACCEPT : 0;
+                l.sendChallenge = l.sendAccept = false;
+            }
+            liveAt = l.partner;
         }
 
         u64 now = osGetTime();
@@ -619,6 +700,55 @@ void RunSession(const Config& cfg) {
             t.put<u32>(8, tradeHash);
             if (!conn.Send(t)) break;
         }
+
+        // Live battle: cancel; else our party, 2 pieces per loop (with our state frames, well under
+        // the server's 60 frames/s), then the challenge or accept; then our answers as they come.
+        if (liveCancelTo) {
+            Frame c(T_LIVE);
+            c.put<u8>(4, LIVE_CANCEL);
+            c.put<u8>(5, liveCancelTo);
+            if (!conn.Send(c)) break;
+        }
+        int liveTotal = liveCount * PARTY_CHUNKS;
+        for (int k = 0; k < 2 && livePiece >= 0 && sent; k++) {
+            Frame p(T_PARTY);
+            p.put<u8>(4, PARTY_LIVE);
+            p.put<u8>(5, liveTo);
+            p.put<u8>(6, (u8)livePiece);
+            p.put<u8>(7, (u8)liveCount);
+            if (liveTotal) {
+                int slot = livePiece / PARTY_CHUNKS, off = (livePiece % PARTY_CHUNKS) * PARTY_CHUNK;
+                int len = game::PK_SIZE - off < PARTY_CHUNK ? game::PK_SIZE - off : PARTY_CHUNK;
+                std::memcpy(p.b + 8, liveParty[slot] + off, len);
+            }
+            sent = conn.Send(p);
+            if (++livePiece >= (liveTotal ? liveTotal : 1)) {
+                livePiece = -1;
+                if (liveThen) {
+                    Frame c(T_LIVE);
+                    c.put<u8>(4, liveThen);
+                    c.put<u8>(5, liveTo);
+                    c.put<u32>(8, liveSeed);
+                    sent = conn.Send(c);
+                    liveThen = 0;
+                }
+            }
+        }
+        if (!sent) break;
+        game::LiveAction act;
+        while (sent && game::LivePopOutgoing(act)) {
+            if (!liveAt) continue; // nobody to send it to (they left: the battle carries on without them)
+            Frame a(T_LIVE);
+            a.put<u8>(4, LIVE_ACTION);
+            a.put<u8>(5, liveAt);
+            a.put<u16>(6, act.step);
+            a.put<u8>(8, act.cmd);
+            a.put<u8>(9, act.count);
+            a.put<u32>(12, act.check);
+            for (int i = 0; i < act.count && i < 6; i++) a.put<u32>(16 + i * 4, act.words[i]);
+            sent = conn.Send(a);
+        }
+        if (!sent) break;
 
         Frame in;
         int r;

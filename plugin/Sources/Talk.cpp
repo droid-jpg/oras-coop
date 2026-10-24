@@ -3,7 +3,7 @@
 //
 //   [intro]     TalkMdlMsg_Seq(LINE_INTRO), wait until printed, A/B with the "more" arrow
 //   text        TalkMdlMsg_Seq(LINE_TEXT), wait until printed
-//   Message:    LastKeyWait(), close
+//   Message:    LastKeyWait(), close [, the trainer battle (battleAfter)]
 //   YesNo:      YesNoWin_Seq(0,0,0,0) until answered; answer = GetWork(0x8010)
 //               TalkMdlMsg_Seq(LINE_ANSWER + answer), wait, LastKeyWait(), close
 //   YesNoPick:  as YesNo; on Yes: TalkMdlMsg_Seq(LINE_PICK), then the game's choice list
@@ -205,6 +205,16 @@ void ChoiceList(Asm& a, u32 firstLine, int count) {
     a.until(N_LIST_START, 0, [] {});
 }
 
+// The trainer battle, as trainer scripts start it. Flag 4 = a battle you may lose: the battle event
+// (FUN_003DB1F0, state 5) whites the player out after a loss unless event+0x2B is set, and only
+// this flag sets it (FUN_003DA118). Without it, losing to a friend ran the whiteout under our
+// script and the game stopped.
+void TrainerBattle(Asm& a, u16 trainer) {
+    const u32 args[7] = { 0, 0, 0, BATTLE_CAN_LOSE, 0, trainer, 0 }; // pushed last to first
+    for (u32 v : args) { a.op(OP_PUSH_C); a.op(v); }
+    a.sysreq(N_TRAINER_BATTLE, 7);
+}
+
 // Menu: the actions list; battle -> reply, close, battle; trade -> the party list; else the reply.
 void BuildMenu(Asm& a, const Dialog& d) {
     ChoiceList(a, LINE_ACTION_ITEM, d.actionCount);
@@ -219,12 +229,7 @@ void BuildMenu(Asm& a, const Dialog& d) {
         a.waitPrinted();
         a.keyWait();
         a.close();
-        // Flag 4 = a battle you may lose: the battle event (FUN_003DB1F0, state 5) whites the player
-        // out after a loss unless event+0x2B is set, and only this flag sets it (FUN_003DA118).
-        // Without it, losing to a friend ran the whiteout under our script and the game stopped.
-        const u32 args[7] = { 0, 0, 0, BATTLE_CAN_LOSE, 0, d.battleTrainer, 0 }; // pushed last to first
-        for (u32 v : args) { a.op(OP_PUSH_C); a.op(v); }
-        a.sysreq(N_TRAINER_BATTLE, 7);
+        TrainerBattle(a, d.battleTrainer);
         a.op(OP_ZERO_PRI);
         a.op(OP_RETN);
         a.land(notBattle);
@@ -290,6 +295,7 @@ bool Build(const Dialog& d) {
     }
     a.keyWait();
     a.close();
+    if (d.battleAfter && d.kind == DialogKind::Message) TrainerBattle(a, d.battleTrainer);
     if (d.evolve) {
         // CallApplicationDemo's 9 arguments: no extra data (2nd 0) and no flag to set (9th -1),
         // so its clean-up callback has nothing to free. The script waits a frame, then ends.

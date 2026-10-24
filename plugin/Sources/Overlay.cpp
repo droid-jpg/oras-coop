@@ -208,11 +208,11 @@ void FillPartyChoices(game::Dialog& d) {
 // your offer goes to X. X talks to you -> "X offers ..." Yes -> picks one back, which also
 // accepts. You talk to X again -> "Trade your A for X's B?" Yes. The server then confirms both
 // accepts to both games at once (COMMIT), and each swaps in the other Pokemon.
-enum class Purpose : u8 { None, Menu, Offer, AnswerOffer, CancelWaiting, Accept };
+enum class Purpose : u8 { None, Menu, Offer, AnswerOffer, CancelWaiting, Accept, LiveAnswer };
 struct DialogCtx {
     int id = 0;
     Purpose purpose = Purpose::None;
-    int battleAction = -1, tradeAction = -1;  // Menu
+    int battleAction = -1, liveAction = -1, tradeAction = -1;  // Menu
 };
 DialogCtx g_dialog;   // the dialog running now (results arrive on the game thread while it runs)
 
@@ -223,6 +223,7 @@ DialogCtx g_dialog;   // the dialog running now (results arrive on the game thre
 struct FriendFight {
     bool armed = false;      // waiting for the battle to start (or to be given up)
     bool running = false;    // their team is in: restore once we're back on the plain field
+    bool live = false;       // a live battle (LiveBattle.cpp): they choose their own moves
     int id = 0;
     u64 armedAt = 0;
     u8 saved[6][game::PK_SIZE];
@@ -234,18 +235,20 @@ struct FriendFight {
 FriendFight g_fight;
 constexpr u64 FIGHT_START_MS = 20000; // armed but no battle by then: the dialog went another way
 
-bool StartFriendFight(int id) {
+// live: their whole party as they sent it for a live battle (the lock is not held).
+bool StartFriendFight(int id, bool live = false) {
     g_session.lock.Lock();
     const Remote& r = g_session.remotes[id];
-    bool ok = r.active && r.partyComplete && r.partyCount > 0;
+    bool ok = r.active && (live ? r.liveComplete && r.liveCount > 0 : r.partyComplete && r.partyCount > 0);
     static u8 party[6][game::PK_SIZE];
-    int count = r.partyCount;
+    int count = live ? r.liveCount : r.partyCount;
     char name[sizeof r.name];
     std::memcpy(name, r.name, sizeof name);
-    if (ok) std::memcpy(party, r.party, sizeof party);
+    if (ok) std::memcpy(party, live ? r.liveParty : r.party, sizeof party);
     g_session.lock.Unlock();
     if (!ok) return false;
     g_fight = FriendFight();
+    g_fight.live = live;
     // Our script starts the battle either way: their team goes in even if ours can't be saved.
     g_fight.savedCount = game::PartyCount();
     for (int i = 0; i < g_fight.savedCount; i++) {
@@ -255,8 +258,118 @@ bool StartFriendFight(int id) {
     g_fight.id = id;
     g_fight.armed = true;
     g_fight.armedAt = osGetTime();
-    game::ArmFriendBattle(&party[0][0], count, name);
+    if (live) game::ArmLiveFriendBattle(&party[0][0], count, name);
+    else game::ArmFriendBattle(&party[0][0], count, name);
     return true;
+}
+
+// ---- Live battles ----
+// Talk to a friend -> Live battle: our whole party and a challenge go to them, and they get the
+// question in their game's text box. On Yes their party comes back with an accept, and both games
+// start the battle (each with the other's team as the trainer's) and trade every choice
+// (LiveBattle.cpp). Whoever challenged is the host: their seed, their side first in ties.
+constexpr u64 LIVE_ANSWER_MS = 90000;   // a challenge with no answer by then is given up
+constexpr u64 LIVE_START_MS = 30000;    // accepted but our battle couldn't start: give up
+
+// Our whole party (eggs too, in order), as our game will build the battle from it.
+int ReadWholeParty(u8 (*out)[game::PK_SIZE]) {
+    int n = game::PartyCount();
+    for (int i = 0; i < n; i++) if (!game::ReadPartySlot(i, out[i])) return 0;
+    return n;
+}
+
+// Lock held.
+void CancelLive(const std::string& notice = "") {
+    Live& l = g_session.live;
+    if (l.partner) l.sendCancel = true;
+    u8 who = l.partner;
+    l.state = LiveState::None;
+    l.asked = false;
+    if (!notice.empty()) PushNotice(notice, who);
+}
+
+// Lock held. We challenge `id`.
+bool ChallengeLive(int id) {
+    Live& l = g_session.live;
+    if (l.state != LiveState::None || g_session.trade.partner) return false;
+    Live fresh;
+    fresh.mineCount = ReadWholeParty(fresh.mine);
+    if (!fresh.mineCount) return false;
+    fresh.state = LiveState::Challenged;
+    fresh.partner = (u8)id;
+    fresh.host = true;
+    fresh.seed = (u32)svcGetSystemTick() ^ (u32)(osGetTime() * 2654435761u);
+    if (!fresh.seed) fresh.seed = 1;
+    fresh.since = osGetTime();
+    fresh.sendParty = fresh.sendChallenge = true;
+    l = fresh;
+    return true;
+}
+
+// Starts our side of an accepted live battle with the game's text box ("Let's battle!") once
+// we're on the plain field. Game thread.
+void UpdateLive(const View& v) {
+    game::UpdateLiveBattle();
+    g_session.lock.Lock();
+    Live& l = g_session.live;
+    u64 now = osGetTime();
+    const Remote& r = g_session.remotes[l.partner];
+    std::string name = r.name;
+    bool idle = v.me.inField && !v.me.suspended && !v.me.locked && !v.me.menuOpen && game::FieldModuleLoaded() &&
+                !game::GameScriptRunning();
+    if (l.state == LiveState::Challenged && now - l.since > LIVE_ANSWER_MS) {
+        CancelLive(name + " didn't answer the challenge.");
+    } else if (l.state == LiveState::Invited) {
+        if (now - l.since > LIVE_ANSWER_MS) CancelLive();
+        else if (!l.asked && idle && r.liveComplete) {
+            game::Dialog d;
+            snprintf(d.intro, sizeof d.intro, "%s challenges you to a live battle!", r.name);
+            snprintf(d.text, sizeof d.text, "You each pick your own moves.\nBattle %s now?", r.name);
+            d.kind = game::DialogKind::YesNo;
+            g_dialog = DialogCtx();
+            g_dialog.id = l.partner;
+            g_dialog.purpose = Purpose::LiveAnswer;
+            g_session.lock.Unlock();
+            int res = game::ShowGameDialog(d);
+            g_session.lock.Lock();
+            if (res == 1) l.asked = true;
+            else g_dialog = DialogCtx();
+        }
+    } else if (l.state == LiveState::HostStart || l.state == LiveState::GuestStart) {
+        if (now - l.since > LIVE_START_MS) {
+            CancelLive("The live battle with " + name + " couldn't start.");
+        } else if (idle && r.liveComplete) {
+            static u8 now6[6][game::PK_SIZE];
+            int n = ReadWholeParty(now6);
+            if (n != l.mineCount || std::memcmp(now6, l.mine, (size_t)n * game::PK_SIZE) != 0) {
+                CancelLive("Your party changed, so the live battle was called off.");
+            } else {
+                int id = l.partner;
+                bool host = l.host;
+                u32 seed = l.seed;
+                u16 trainer = game::IsMayModel(r.model) ? game::TRAINER_MAY : game::TRAINER_BRENDAN;
+                game::Dialog d;
+                snprintf(d.text, sizeof d.text, host ? "%s accepted! Let's battle!" : "Let's battle, %s!", r.name);
+                d.battleAfter = true;
+                d.battleTrainer = trainer;
+                g_session.lock.Unlock();
+                bool armed = StartFriendFight(id, true);
+                if (armed) game::ArmLiveBattle(host, seed);
+                int res = armed ? game::ShowGameDialog(d) : -1;
+                g_session.lock.Lock();
+                if (res == 1) {
+                    l.state = LiveState::Running;
+                } else {
+                    // Not now (another script): disarm and try again next frame.
+                    game::DisarmLiveBattle();
+                    game::DisarmFriendBattle();
+                    g_fight = FriendFight();
+                    if (res < 0 && armed) CancelLive("The live battle with " + name + " couldn't start.");
+                }
+            }
+        }
+    }
+    g_session.lock.Unlock();
 }
 
 bool AllDown(const game::BattleState& b, int side) {
@@ -269,6 +382,12 @@ void UpdateFriendFight(const View& v) {
     if (g_fight.armed && game::FriendBattleStarted()) { g_fight.armed = false; g_fight.running = true; }
     if (g_fight.armed && osGetTime() - g_fight.armedAt > FIGHT_START_MS) {
         game::DisarmFriendBattle();
+        if (g_fight.live) {
+            game::DisarmLiveBattle();
+            g_session.lock.Lock();
+            CancelLive("The live battle didn't start.");
+            g_session.lock.Unlock();
+        }
         g_fight = FriendFight();
         return;
     }
@@ -283,10 +402,23 @@ void UpdateFriendFight(const View& v) {
     for (int i = 0; restored && i < g_fight.savedCount; i++) restored = game::WritePartySlot(i, g_fight.saved[i]);
     if (g_fight.haveMoney) game::WriteMoney(g_fight.money);
     game::DisarmFriendBattle();
+    game::LiveStatus live = game::GetLiveStatus();
+    if (g_fight.live) {
+        game::DisarmLiveBattle();
+        game::RestoreBattleStyle();
+    }
     g_session.lock.Lock();
     std::string name = g_session.remotes[g_fight.id].name;
-    const char* how = AllDown(g_fight.last, 1) ? "You beat " : AllDown(g_fight.last, 0) ? "You lost to " : "Battle over: ";
-    PushNotice(std::string(how) + name + "'s team!" + (restored ? "" : " (party changed, not restored)"), (u8)g_fight.id);
+    if (!g_fight.live) {
+        const char* how = AllDown(g_fight.last, 1) ? "You beat " : AllDown(g_fight.last, 0) ? "You lost to " : "Battle over: ";
+        PushNotice(std::string(how) + name + "'s team!" + (restored ? "" : " (party changed, not restored)"), (u8)g_fight.id);
+    } else {
+        const char* how = AllDown(g_fight.last, 1) ? "You beat " : AllDown(g_fight.last, 0) ? "You lost to " : "Battle over with ";
+        PushNotice(std::string(how) + name + "!" + (restored ? "" : " (party changed, not restored)"), (u8)g_fight.id);
+        if (live.fellBack) PushNotice(name + " left: the game played their team.", (u8)g_fight.id);
+        else if (live.desync) PushNotice("Your games went out of step: results may differ.", (u8)g_fight.id);
+        if (g_session.live.state == LiveState::Running) g_session.live = Live();
+    }
     g_session.lock.Unlock();
     g_fight = FriendFight();
 }
@@ -298,6 +430,7 @@ game::Dialog FriendDialog(int id) {
     g_session.lock.Lock();
     const Remote r = g_session.remotes[id];
     const Trade t = g_session.trade;
+    const Live live = g_session.live;
     g_session.lock.Unlock();
     std::string name = r.name, greeting = r.greeting[0] ? r.greeting : "...";
     auto set = [](char* dst, const std::string& s) { snprintf(dst, 96, "%s", s.c_str()); };
@@ -310,6 +443,19 @@ game::Dialog FriendDialog(int id) {
                  (unsigned)a.hp, (unsigned)a.maxHp, MonName(b.species, b.level).c_str(), (unsigned)b.hp,
                  (unsigned)b.maxHp);
         set(d.text, buf);
+        return d;
+    }
+    if (live.state != LiveState::None && live.partner == id) {
+        if (live.state == LiveState::Invited && r.liveComplete) { // the question, if it hasn't popped up yet
+            set(d.intro, name + " challenges you to a live battle!");
+            set(d.text, "You each pick your own moves.\nBattle " + name + " now?");
+            d.kind = game::DialogKind::YesNo;
+            g_dialog.purpose = Purpose::LiveAnswer;
+        } else if (live.state == LiveState::Challenged) {
+            set(d.text, "Waiting for " + name + " to answer\nyour challenge...");
+        } else {
+            set(d.text, "Let's battle!");
+        }
         return d;
     }
     if (t.partner && t.partner != id) { // trading with someone else: just chat
@@ -328,11 +474,13 @@ game::Dialog FriendDialog(int id) {
             d.battleAction = action("Battle");
             d.battleTrainer = game::IsMayModel(r.model) ? game::TRAINER_MAY : game::TRAINER_BRENDAN;
         }
+        int liveAction = live.state == LiveState::None ? action("Live battle") : -1;
         d.tradeAction = action("Trade");
         action("Cancel");
         FillPartyChoices(d);
         g_dialog.purpose = Purpose::Menu;
         g_dialog.battleAction = d.battleAction;
+        g_dialog.liveAction = liveAction;
         g_dialog.tradeAction = d.tradeAction;
     } else if (t.mySlot < 0) {
         if (!t.theirComplete) { set(d.text, greeting); return d; } // their offer is still arriving
@@ -380,6 +528,9 @@ void OnDialogResult(game::DialogResult what, int value, char* reply, int len) {
             bool ok = StartFriendFight(ctx.id);
             g_session.lock.Lock();
             text = ok ? "Let's battle, " + name + "!" : name + "'s team isn't here yet...";
+        } else if (value == ctx.liveAction) {
+            text = ChallengeLive(ctx.id) ? "You challenged " + name + " to a\nlive battle! Waiting for " + name + "..."
+                                         : "You can't battle right now.";
         } else if (value == ctx.tradeAction) {
             g_dialog.purpose = Purpose::Offer; // the party list follows
         }
@@ -434,6 +585,27 @@ void OnDialogResult(game::DialogResult what, int value, char* reply, int len) {
         t.iAccepted = true;
         t.sendAccept = true;
         text = "Trading with " + name + "...";
+        break;
+    }
+    case Purpose::LiveAnswer: {
+        Live& l = g_session.live;
+        if (l.partner != ctx.id || l.state != LiveState::Invited) { text = name + " called off the battle."; break; }
+        if (!IsYes(value)) {
+            CancelLive();
+            text = "Maybe next time.";
+            break;
+        }
+        l.mineCount = ReadWholeParty(l.mine);
+        if (!l.mineCount || !g_session.remotes[ctx.id].liveComplete) {
+            CancelLive();
+            text = "You can't battle right now.";
+            break;
+        }
+        l.state = LiveState::GuestStart;
+        l.host = false;
+        l.since = osGetTime();
+        l.sendParty = l.sendAccept = true;
+        text = "Get ready...";
         break;
     }
     case Purpose::None:
@@ -1064,6 +1236,7 @@ void DrawTop(const Canvas& s) {
     FinishTrade(v);
     UpdateTradeEvolution(v);
     UpdateFriendFight(v);
+    UpdateLive(v);
     UpdateActivity(v.me, g_fight.armed || g_fight.running);
     // The X menu dims the field and the game's own text boxes sit where our labels go: step aside.
     // (The lock comes a few frames before the menu bit; once the menu is up the game stops

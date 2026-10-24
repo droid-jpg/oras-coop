@@ -565,3 +565,41 @@ where the overlay hides, stayed sharp). Fix: draw the overlay with the 3DS GPU i
   No type launches DllShinkaDemo, hence Evolve.cpp's hook on `FUN_003CFBA8`.
 - Pokemon object (0x10, vtable 0x5DE89C): +4 data, +8 party stats, +0xC accessor; vtable +8 =
   deleting destructor. Blank one: `FUN_0011F560(mem, heap, 0, 1, 0, 0)`.
+
+### Live battles: the battle server, adapters, RNG (2026-10-24)
+
+DllBattle decompiled whole into `ORAS-RE/decomp/all_btl/<addr>.c` (ghidra_scripts/DecompAll.java,
+program code_btl.bin, range 0x6F3000-0x7DA000). Same design as Gen 5's btl_server/btl_client.
+
+- **Main module** (`param_1` of the setup procs): +0x10 setup, +0x18 TinyMT state = the battle RNG
+  (calc globals `0x08152AD8` +0x54 points at it), +0x28 its 16-byte seed copy, +0x815 my client id,
+  +0x818 battle style (config bit 3), +0x820 server, +0x828 + id*4 clients. Init `FUN_00707740`:
+  setup+0x4B == 1 (replay) takes the seed from setup+0x128, else `FUN_001122E4` seeds from the clock.
+- **Setup procs**: PMF table at 0x7CE2B8. One-console single battle = `FUN_0070956C`: state 6 server
+  `FUN_0076677C` (copies main+0x28 into the calc RNG again), 7/8 clients `FUN_007662E0(…, id, type)`
+  (type +0x91: 0 UI, 1 AI, 2 replay; AI object made only for type 1), 0xB `FUN_00766110` attaches
+  each client's adapter (client+0x54) to the server (+0x1C + id*0xC: adapter, party, count, id @+0x27).
+- **Adapter** (`FUN_007684B8`): +0 answer*, +4 answer bytes, +8 u16 command, +0xC command data,
+  +0x1781 client, +0x1782 state (1 sent, 3 waiting, 4 answered), +0x1783 low nibble answered /
+  high nibble link battle. Server side: `FUN_007682C8(server, cmd, data, size)` sends to all,
+  **`FUN_00768150(server)`** polls all (link: `FUN_0042CDE4`/`FUN_0042CE08` net), `FUN_007A0AEC`
+  = "answered?", `FUN_00768018` copies answers (u32 each) to server+0xB4 + client*0x18,
+  `FUN_00767DA8` builds the replay record (cmd 10). Client side: dispatch `FUN_006F7984`, table
+  0x7CEC68 {u8 cmd, u8, PMF UI, AI, replay}; answers via `FUN_0076DBBC(adapter, ptr, size)`.
+- **Commands**: 3 pick actions (server `FUN_007044C0`), 5 send-in after a faint (`FUN_0070508C`),
+  6 change (`FUN_007055CC`), 4 Shift-style "switch?" (only to my client, `FUN_007017F0`; answer 0 =
+  No), 7 run? (wild), 8 play server commands.
+- **Action word**: low nibble kind (1 move, 2 item, 3 switch, 4 run, 6/8 rotation/mega?), move:
+  target position bits 4..7 (0xA = the game's default in singles), move id bits 8..23, bit 27/28
+  flags; switch: `3 | pos << 4 | slot << 7` (AI: `FUN_0070138C`).
+- **RNG**: TinyMT32, `FUN_0010FC58(state, seed)` init, `FUN_00175CEC(state, n)` → [0, n); calc
+  wrapper `FUN_007436F8(n)`. The AI saves/restores the battle RNG around its simulations (dbee4/dbed0).
+  Client RNGs (+0x58, +0x68) are separate.
+- **Order**: `FUN_0075FA58` lists the actions client by client, then `FUN_0075E010` sorts by priority
+  word with `rand(2)` on ties (bubble, list order matters); special priority (Quick Claw) rolls after
+  the first sort. `FUN_0075E1B8(list, flow)` sorts Pokemon by speed (`FUN_00760414`) the same way.
+  Pokemon id → client: `FUN_0076D770` (0..5 → 0, 12..17 → 1, 6..11 → 2, 18..23 → 3).
+- **Player-only extras** in a one-console battle: EXP (`FUN_0075F034`, off with setup+0xA8 0x200 or
+  0x2000), Amie affection into battle Pokemon +0x154 (`FUN_00766A64` → `FUN_004D2D84` = PK6 0xA3/0xCB,
+  only for the client with player data at main+0x838), Shift question, O-Powers (not handled).
+- DllBattle import stubs: 0x6F36A8 → `FUN_004EA27C` (battle style), 0x6F4A18 → `FUN_004D2D84`.
