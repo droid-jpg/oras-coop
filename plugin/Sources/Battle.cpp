@@ -62,7 +62,7 @@ bool ReadBattle(BattleState& out) {
 // (0xE8 bytes, the usual PK6 layout), +8 -> its encrypted party stats (0x1C bytes: status, level,
 // HP...). Both are encrypted with keys derived from the data's own first word, so copying both
 // blocks from another game gives a consistent Pokemon.
-constexpr u32 PARTY_ARRAY = 0x08CFB1E0, PARTY_COUNT = PARTY_ARRAY + 6 * 4;
+constexpr u32 PARTY_ARRAY = PARTY_OBJECT, PARTY_COUNT = PARTY_ARRAY + 6 * 4;
 constexpr u32 SLOT_VTABLE = 0x005DE89C, SLOT_DATA = 4, SLOT_STATS = 8;
 
 namespace {

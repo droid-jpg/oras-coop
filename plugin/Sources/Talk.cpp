@@ -77,7 +77,7 @@ constexpr u32 BATTLE_CAN_LOSE = 4;           // _CallTrainerBattleCore flags: no
 // Native name hashes: h = c ^ (h * 0x83) over the name (FUN_00505B04). GetWork's name isn't in
 // DllField's table; the Surf script calls it with 0x8010 right after YesNoWin_Seq.
 enum Native : u32 { N_TALK_MSG, N_WIN_READY, N_SUSPEND, N_KEY_WAIT, N_CLOSE, N_YESNO, N_GET_WORK,
-                   N_MARK, N_AB_WAIT, N_UNMARK, N_LIST_INIT, N_LIST_ADD, N_LIST_START, N_TRAINER_BATTLE, NATIVES };
+                   N_MARK, N_AB_WAIT, N_UNMARK, N_LIST_INIT, N_LIST_ADD, N_LIST_START, N_TRAINER_BATTLE, N_APP_DEMO, NATIVES };
 constexpr u32 NATIVE_HASH[NATIVES] = {
     0x9ADF1616, // TalkMdlMsg_Seq
     0xC8E7FB61, // CheckWinAllSuspend
@@ -94,6 +94,8 @@ constexpr u32 NATIVE_HASH[NATIVES] = {
     0x5CB69D67, // ListMenuStart_Seq(): 0 until chosen (0x74A388)
     0x0B144EC1, // _CallTrainerBattleCore(0, trainer, 0, flags, 0, 0, 0): as trainer scripts (common
                 // script file 81) call it; the script resumes once the battle is over (0x74E588)
+    0xB38D54CB, // CallApplicationDemo(demo, ...): asks for app type 0x16, which Evolve.cpp's hook
+                // turns into the evolution scene while one is armed (0x74BE5C)
 };
 
 // Opcodes of the game's Pawn VM (standard Pawn numbering; jump table *(0x0050468C), verifier
@@ -288,6 +290,14 @@ bool Build(const Dialog& d) {
     }
     a.keyWait();
     a.close();
+    if (d.evolve) {
+        // CallApplicationDemo's 9 arguments: no extra data (2nd 0) and no flag to set (9th -1),
+        // so its clean-up callback has nothing to free. The script waits a frame, then ends.
+        const s32 args[9] = { -1, 0, 0, 0, 0, 0, 0, 0, 0 }; // pushed last to first
+        for (s32 v : args) { a.op(OP_PUSH_C); a.op((u32)v); }
+        a.sysreq(N_APP_DEMO, 9);
+        a.waitFrame();
+    }
     a.op(OP_ZERO_PRI);
     a.op(OP_RETN);
     if (a.n > MAX_CODE) return false;

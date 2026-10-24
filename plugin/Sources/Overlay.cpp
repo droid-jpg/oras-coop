@@ -881,6 +881,47 @@ void DrawNotice(const Canvas& s, const View& v, bool visible) {
 }
 
 // ---- Trades ----
+// A received Pokemon that evolves by trade (Evolve.cpp): the game's text box says what came in,
+// then the game's evolution scene runs, as after a link trade.
+struct TradeEvolution {
+    bool pending = false;
+    int slot = -1;
+    u32 ec = 0;                    // the received Pokemon's encryption constant (still in the slot?)
+    u8 given[game::PK_SIZE];       // what we traded away (Karrablast <-> Shelmet look at it)
+    char text[96] = {0};
+    u8 from = 0;
+    u64 since = 0;
+};
+TradeEvolution g_evo;
+constexpr u64 EVOLVE_GIVE_UP_MS = 30000;
+
+// Starts a pending trade evolution once nothing else is on screen.
+void UpdateTradeEvolution(const View& v) {
+    TradeEvolution& e = g_evo;
+    if (!e.pending || !v.me.inField || v.me.suspended || v.me.locked || v.me.menuOpen || game::GameScriptRunning())
+        return;
+    u8 pk[game::PK_SIZE];
+    u16 into = 0;
+    bool still = game::ReadPartySlot(e.slot, pk) && std::memcmp(pk, &e.ec, 4) == 0;
+    if (!still || !game::ArmTradeEvolution(e.slot, e.given, into)) {
+        e.pending = false; // moved, or no longer evolves (it was given another item...)
+        return;
+    }
+    game::Dialog d;
+    std::strncpy(d.text, e.text, sizeof d.text - 1);
+    d.evolve = true;
+    int r = game::ShowGameDialog(d);
+    if (r == 1) {
+        e.pending = false;
+        return;
+    }
+    game::DisarmTradeEvolution();
+    if (r < 0 || osGetTime() - e.since > EVOLVE_GIVE_UP_MS) {
+        e.pending = false;
+        PushNotice(std::string(e.text), e.from);
+    }
+}
+
 // Both sides accepted: write their Pokemon into our offered slot, but only on the plain field
 // (no menu, text box, script or battle), and only if that slot still holds what we offered.
 void FinishTrade(const View& v) {
@@ -896,10 +937,22 @@ void FinishTrade(const View& v) {
     u8 partner = t.partner;
     bool same = game::ReadPartySlot(t.mySlot, now) && std::memcmp(now, t.mine, game::PK_SIZE) == 0;
     if (same && game::WritePartySlot(t.mySlot, t.theirs)) {
-        u16 species = 0;
+        u16 species = 0, into = 0;
         u8 level = 0;
         game::DescribePokemon(t.theirs, species, level);
-        PushNotice("Trade complete! You received " + MonName(species, level) + ".", partner);
+        std::string got = "Trade complete! You received " + MonName(species, level) + ".";
+        if (game::ArmTradeEvolution(t.mySlot, t.mine, into)) {
+            game::DisarmTradeEvolution(); // armed again right before the scene starts
+            g_evo.pending = true;
+            g_evo.slot = t.mySlot;
+            std::memcpy(&g_evo.ec, t.theirs, 4);
+            std::memcpy(g_evo.given, t.mine, game::PK_SIZE);
+            std::strncpy(g_evo.text, (them + " sent over " + MonLabel(t.theirs) + "!").c_str(), sizeof g_evo.text - 1);
+            g_evo.from = partner;
+            g_evo.since = osGetTime();
+        } else {
+            PushNotice(got, partner);
+        }
     } else {
         PushNotice("Trade failed: your party changed.", partner);
     }
@@ -1006,6 +1059,7 @@ void DrawTop(const Canvas& s) {
     ListWho(v);
     UpdatePuppets(v.puppets, v.me, v.remotes, v.myId, g_talk.open ? g_talk.id : 0);
     FinishTrade(v);
+    UpdateTradeEvolution(v);
     UpdateFriendFight(v);
     UpdateActivity(v.me, g_fight.armed || g_fight.running);
     // The X menu dims the field and the game's own text boxes sit where our labels go: step aside.

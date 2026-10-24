@@ -287,6 +287,8 @@ int main() {
     game::InstallTalkHooks(coop::FriendTalk, coop::FriendDialogResult);
     // Battling a friend's team puts it in as the opponent's party (FriendBattle.cpp).
     game::InstallFriendBattleHook();
+    // A traded Pokemon that evolves by trade gets the game's evolution scene (Evolve.cpp).
+    game::InstallEvolutionHook();
     // Overlay drawn with the GPU inside the game's frame (keeps Azahar's upscaling); Gpu.cpp.
     game::InstallGpuOverlay();
 

@@ -542,3 +542,26 @@ where the overlay hides, stayed sharp). Fix: draw the overlay with the 3DS GPU i
   between the last split and the transfer caused no visible corruption of the game's following
   frames (title, intro cutscene, field, battles, X menu, map changes): the game sets its state
   again each frame.
+
+### Trade evolutions (2026-10-24)
+
+- **Link trade evolution** (`FUN_003E1D48` state 4, the Colosseum/trade proc): `FUN_004D2C68(received,
+  given, &u16 species, &u32 route)` -> bool. Wraps `FUN_004D0C40(*0x617A64, ...)`: walks the species'
+  evolution entries; method 5 trade, 6 trade holding item (param = item), 7 trade with partner
+  (Karrablast 588 <-> Shelmet 616, needs the partner object; others accept partner = 0). Everstone
+  check via vtable +8 of the evolution manager on the held item (skipped for Kadabra, 0x40); eggs never.
+  `route` = entry index.
+- **DllShinkaDemo param** (0x20): +0 PokeParty*, +4 index, +8 species, +0xC route, +0x10 u8 flags
+  (trade: 0,0,0,1; after battle `FUN_003E8C68`: 1,1,1,? and +0x14 = MyStatus gamedata+0x129A0),
+  rest 0. Battle level-ups pass the player's own party + slot, so the scene evolves in place.
+  Launchers: `FUN_00369658(procMgr, param)` (Sequence + BackGround; no code.bin callers) and
+  `FUN_003697B0` (also loads DllBattle; link trade and post-battle).
+- **App calls from the field**: the request lives on the script manager (`*0x005F46FC`, same object
+  as Talk.cpp's): `FUN_003D05E4(mgr, type, paramSize, doneCallback, x)` sets +0x1C type, +0x20 param,
+  +0x24 pending, +0x2C callback. Natives fill it (CallFieldTradeDemo type 0x15 via DllField thunk
+  0x6F5BF0; CallApplicationDemo 0x74BE5C type 0x16, 0x24-byte param, callback 0x78A1CC frees
+  param[0]/[2]). The script manager's state machine `FUN_003D06B4` starts it in state 1 with
+  `FUN_003CFBA8(mgr, gameMgr)` (switch on type, procMgr = gameMgr+0x14; types 1 and 0x12 do nothing).
+  No type launches DllShinkaDemo, hence Evolve.cpp's hook on `FUN_003CFBA8`.
+- Pokemon object (0x10, vtable 0x5DE89C): +4 data, +8 party stats, +0xC accessor; vtable +8 =
+  deleting destructor. Blank one: `FUN_0011F560(mem, heap, 0, 1, 0, 0)`.

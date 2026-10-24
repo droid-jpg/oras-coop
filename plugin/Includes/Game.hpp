@@ -171,6 +171,8 @@ bool IsModelResident(u16 model);
 //              (the game's own _CallTrainerBattleCore, as trainer scripts call it, with its "may
 //              lose" flag: no whiteout on a loss). If it is `tradeAction`, `pick` and the
 //              list of `items` follow, as in YesNoPick.
+//   evolve:    once the box closes, the evolution scene armed with ArmTradeEvolution (Evolve.cpp)
+//              runs, and the script ends with it.
 enum class DialogKind : u8 { Message, YesNo, YesNoPick, Menu };
 constexpr int DIALOG_ITEMS = 6;
 constexpr int DIALOG_ACTIONS = 4;
@@ -185,6 +187,7 @@ struct Dialog {
     int actionCount = 0;
     int battleAction = -1, tradeAction = -1;
     u16 battleTrainer = 0;
+    bool evolve = false;                  // after the text: the evolution armed by ArmTradeEvolution
 };
 // Answer: the Yes/No result as the game stores it (non-zero = Yes). Slot: the party slot picked.
 // Action: the Menu entry picked (0xFF = none).
@@ -227,6 +230,7 @@ bool ReadBattle(BattleState& out);
 // ---- Party (Battle.cpp) ----
 // A party Pokemon as the game keeps it: the encrypted data block, then the encrypted party stats.
 constexpr int PK_DATA = 0xE8, PK_STATS = 0x1C, PK_SIZE = PK_DATA + PK_STATS;
+constexpr u32 PARTY_OBJECT = 0x08CFB1E0;       // the player's PokeParty (6 Pokemon objects, count)
 int PartyCount();
 bool ReadPartySlot(int slot, u8* out);         // PK_SIZE bytes
 bool WritePartySlot(int slot, const u8* in);   // replaces that slot (field only, no menu open)
@@ -246,6 +250,18 @@ bool ReadBoxSlot(int slot, u8* out);         // PK_DATA bytes
 bool SpeciesOf(const u8* pk, u16& species, bool* egg = nullptr);
 // Sets a party Pokemon's (PK_SIZE bytes) current HP to its max and clears its status.
 void HealPokemon(u8* pk);
+
+// ---- Trade evolutions (Evolve.cpp) ----
+// Hooks the game's app starter (FUN_003CFBA8) so a talk script with Dialog::evolve runs the
+// game's evolution scene (DllShinkaDemo) instead of the field demo it asks for.
+bool InstallEvolutionHook();
+// The game's own trade-evolution check on the party Pokemon in `slot`, just received for `given`
+// (PK_SIZE bytes; only Karrablast/Shelmet look at it): trade, trade holding an item, Everstone.
+// If it evolves, `species` is what into, and the scene is armed for that slot: show a dialog with
+// `evolve` set next. Game thread, plain field.
+bool ArmTradeEvolution(int slot, const u8* given, u16& species);
+void DisarmTradeEvolution();
+bool TradeEvolutionArmed();
 
 // ---- Battles with friends' teams (FriendBattle.cpp) ----
 // Hooks the game's trainer loader (FUN_00367804): while armed, the opponent's party (client 1)

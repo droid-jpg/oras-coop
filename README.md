@@ -24,6 +24,7 @@ trainers, in real time.
 - **Battle a friend's team.** Pick **Battle** and you fight their real party, under their name.
   Losing is fine: your party and money are put back afterwards.
 - **Trade.** Pick **Trade**, choose a Pokémon, and your friend answers by talking to you.
+  Pokémon that evolve by trading evolve when they arrive.
 - **Chat.** Press **SELECT** → *Send chat*. Type `/who` to see who's online and where.
 - **Follow each other.** Doors show "Ann is inside", the player list shows which town or route
   everyone is on, and you get a notice when a friend catches a Pokémon, evolves one or wins a badge.
@@ -62,7 +63,8 @@ Everyone who types the same room code ends up in the same world.
 ## Good to know
 
 - It's early. Expect rough edges, and back up your save before playing.
-- Trades are the mod's own, not the game's link trade: no trade evolutions.
+- Trades are the mod's own, not the game's link trade, but trade evolutions work: a Haunter,
+  Kadabra, Onix holding a Metal Coat and so on evolve with the game's own evolution scene.
 - Battles against a friend are fought by the game's AI using their team, not by them live.
 - Alpha Sapphire v1.4 only for now (no Omega Ruby, no real 3DS yet).
 
