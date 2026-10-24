@@ -57,8 +57,9 @@ bool ReadBattle(BattleState& out) {
 }
 
 // ---- Party ----
-// The party is 6 pointers at 0x08CFB1E0 followed by a u32 count (allocated at boot, same address
-// in every run seen). Each slot object (vtable 0x005DE89C): +4 -> the encrypted Pokemon data
+// The party is 6 pointers at 0x08CFB1E0 followed by a u8 count and a u8 lead slot (the first
+// Pokemon that can battle: not 0 when slot 0 has fainted), allocated at boot, same address in
+// every run seen. Each slot object (vtable 0x005DE89C): +4 -> the encrypted Pokemon data
 // (0xE8 bytes, the usual PK6 layout), +8 -> its encrypted party stats (0x1C bytes: status, level,
 // HP...). Both are encrypted with keys derived from the data's own first word, so copying both
 // blocks from another game gives a consistent Pokemon.
@@ -68,8 +69,9 @@ constexpr u32 SLOT_VTABLE = 0x005DE89C, SLOT_DATA = 4, SLOT_STATS = 8;
 namespace {
 
 bool SlotBlocks(int slot, u32& data, u32& stats) {
-    u32 count = 0, obj = 0, vt = 0;
-    if (slot < 0 || slot >= 6 || !Process::Read32(PARTY_COUNT, count) || count == 0 || count > 6 ||
+    u8 count = 0;
+    u32 obj = 0, vt = 0;
+    if (slot < 0 || slot >= 6 || !Process::Read8(PARTY_COUNT, count) || count == 0 || count > 6 ||
         (u32)slot >= count || !HeapPtr(PARTY_ARRAY + slot * 4, obj) || !Process::Read32(obj, vt) ||
         vt != SLOT_VTABLE)
         return false;
@@ -88,8 +90,8 @@ void Crypt(u8* b, u32 seed, int start, int end) {
 } // namespace
 
 int PartyCount() {
-    u32 count = 0;
-    return Process::Read32(PARTY_COUNT, count) && count <= 6 ? (int)count : 0;
+    u8 count = 0;
+    return Process::Read8(PARTY_COUNT, count) && count <= 6 ? (int)count : 0;
 }
 
 bool ReadPartySlot(int slot, u8* out) {

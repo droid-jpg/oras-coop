@@ -362,8 +362,11 @@ bool IsYes(int answer) { return answer != 0; }
 
 // Acts on an answer in the running dialog and writes the reply line (game thread).
 void OnDialogResult(game::DialogResult what, int value, char* reply, int len) {
-    const DialogCtx ctx = g_dialog;
+    DialogCtx ctx = g_dialog;
     g_dialog.purpose = Purpose::None; // one answer per dialog
+    // Menu -> Trade goes straight on to the party list without showing the action's reply line,
+    // so the first answer we hear is the slot picked: that is the offer.
+    if (ctx.purpose == Purpose::Menu && what == game::DialogResult::Slot) ctx.purpose = Purpose::Offer;
     g_session.lock.Lock();
     Trade& t = g_session.trade;
     std::string name = ctx.id >= 1 && ctx.id <= MAX_ID ? g_session.remotes[ctx.id].name : "them";

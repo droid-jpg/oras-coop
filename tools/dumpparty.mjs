@@ -14,7 +14,7 @@ function read(addr, len) {
   }
   return buf;
 }
-const head = read(0x08CFB1E0, 0x1C), count = head.readUInt32LE(0x18);
+const head = read(0x08CFB1E0, 0x1C), count = head[0x18];
 const out = [];
 for (let i = 0; i < count; i++) {
   const obj = head.readUInt32LE(i * 4), ptrs = read(obj + 4, 8);
